@@ -386,6 +386,45 @@ func (h *HttpServer) wxFileDecode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *HttpServer) kuaishouFetchList(w http.ResponseWriter, r *http.Request) {
+	var data struct {
+		UserId string `json:"userId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		h.error(w, err.Error())
+		return
+	}
+	if data.UserId == "" {
+		h.error(w, "userId is required")
+		return
+	}
+	if !kuaishouPlugin.HasCookies() {
+		h.error(w, "未检测到Cookie，请先开启代理并浏览快手页面")
+		return
+	}
+	if err := kuaishouPlugin.FetchProfileVideos(data.UserId); err != nil {
+		h.error(w, err.Error())
+		return
+	}
+	h.success(w, respData{
+		"message": "开始获取",
+	})
+}
+
+func (h *HttpServer) kuaishouCancelFetch(w http.ResponseWriter, r *http.Request) {
+	kuaishouPlugin.CancelFetch()
+	h.success(w, respData{
+		"message": "已取消",
+	})
+}
+
+func (h *HttpServer) kuaishouFetchStatus(w http.ResponseWriter, r *http.Request) {
+	h.success(w, respData{
+		"isFetching": kuaishouPlugin.IsFetching(),
+		"hasCookies": kuaishouPlugin.HasCookies(),
+	})
+}
+
 func (h *HttpServer) batchExport(w http.ResponseWriter, r *http.Request) {
 	var data struct {
 		Content string `json:"content"`

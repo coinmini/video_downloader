@@ -99,6 +99,14 @@
                   </template>
                   {{ t('index.export_url') }}
                 </NButton>
+                <NButton tertiary type="success" @click.stop="openBatchFetch" class="my-1">
+                  <template #icon>
+                    <n-icon>
+                      <DownloadOutline/>
+                    </n-icon>
+                  </template>
+                  {{ t('index.batch_fetch') }}
+                </NButton>
               </div>
             </NPopover>
           </NButton>
@@ -131,11 +139,43 @@
     <ShowLoading :loadingText="loadingText" :isLoading="loading"/>
     <ImportJson v-model:showModal="showImport" @submit="handleImport"/>
     <Password v-model:showModal="showPassword" @submit="handlePassword"/>
+    <n-modal v-model:show="showBatchFetch" preset="card" :title="t('index.batch_fetch_title')" style="width: 500px;">
+      <n-space vertical>
+        <n-input
+            v-model:value="batchFetchUrl"
+            :placeholder="t('index.kuaishou_url_placeholder')"
+            clearable
+        />
+        <n-space>
+          <n-button
+              type="primary"
+              @click="startBatchFetch"
+              :loading="batchFetching"
+              :disabled="batchFetching"
+          >
+            {{ batchFetching ? t('index.fetching') : t('index.start_fetch') }}
+          </n-button>
+          <n-button
+              v-if="batchFetching"
+              type="error"
+              @click="cancelBatchFetch"
+          >
+            {{ t('index.cancel_fetch') }}
+          </n-button>
+        </n-space>
+        <n-alert v-if="!batchFetchHasCookies" type="warning">
+          {{ t('index.kuaishou_no_cookies') }}
+        </n-alert>
+        <n-alert v-if="batchFetchMessage" :type="batchFetchAlertType">
+          {{ batchFetchMessage }}
+        </n-alert>
+      </n-space>
+    </n-modal>
   </div>
 </template>
 
 <script lang="ts" setup>
-import {NButton, NIcon, NImage, NInput, NSpace, NTooltip, NPopover, NGradientText} from "naive-ui"
+import {NButton, NIcon, NImage, NInput, NSpace, NTooltip, NPopover, NGradientText, NModal, NAlert} from "naive-ui"
 import {computed, h, onMounted, ref, watch} from "vue"
 import type {appType} from "@/types/app"
 import type {DataTableRowKey, ImageRenderToolbarProps, DataTableFilterState, DataTableBaseColumn} from "naive-ui"
@@ -472,6 +512,18 @@ const loading = ref(false)
 const loadingText = ref("")
 const showImport = ref(false)
 const showPassword = ref(false)
+const showBatchFetch = ref(false)
+const batchFetchUrl = ref("")
+const batchFetching = ref(false)
+const batchFetchMessage = ref("")
+const batchFetchStatus = ref("")
+const batchFetchHasCookies = ref(true)
+const batchFetchAlertType = computed(() => {
+  if (batchFetchStatus.value === "error") return "error"
+  if (batchFetchStatus.value === "done") return "success"
+  if (batchFetchStatus.value === "waiting_cookies") return "warning"
+  return "info"
+})
 const downloadQueue = ref<appType.MediaInfo[]>([])
 let activeDownloads = 0
 let isOpenProxy = false
@@ -571,6 +623,17 @@ onMounted(() => {
           cacheData()
           checkQueue()
           break
+      }
+    }
+  })
+
+  eventStore.addHandle({
+    type: "batchFetchProgress",
+    event: (res: { status: string, total: number, message: string }) => {
+      batchFetchMessage.value = res.message
+      batchFetchStatus.value = res.status
+      if (res.status === "done" || res.status === "error" || res.status === "cancelled") {
+        batchFetching.value = false
       }
     }
   })
@@ -944,6 +1007,49 @@ const decodeWxFile = (row: appType.MediaInfo, index: number) => {
       })
     }
   })
+}
+
+const extractKuaishouUserId = (url: string): string => {
+  const match = url.match(/\/profile\/(\w+)/)
+  if (match) return match[1]
+  if (/^\w+$/.test(url.trim())) return url.trim()
+  return ""
+}
+
+const openBatchFetch = async () => {
+  showBatchFetch.value = true
+  batchFetchMessage.value = ""
+  const res = await appApi.kuaishouFetchStatus()
+  if (res.code === 1) {
+    batchFetchHasCookies.value = res.data.hasCookies
+    batchFetching.value = res.data.isFetching
+  }
+}
+
+const startBatchFetch = async () => {
+  const userId = extractKuaishouUserId(batchFetchUrl.value)
+  if (!userId) {
+    window?.$message?.error(t("index.kuaishou_invalid_url"))
+    return
+  }
+
+  batchFetching.value = true
+  batchFetchMessage.value = ""
+  batchFetchStatus.value = "fetching"
+
+  const res = await appApi.kuaishouFetchList({userId})
+  if (res.code === 0) {
+    batchFetching.value = false
+    batchFetchStatus.value = "error"
+    batchFetchMessage.value = res.message
+    window?.$message?.error(res.message)
+  }
+}
+
+const cancelBatchFetch = async () => {
+  await appApi.kuaishouCancelFetch()
+  batchFetching.value = false
+  batchFetchStatus.value = "cancelled"
 }
 
 const handleImport = (content: string) => {

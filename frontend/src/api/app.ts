@@ -120,4 +120,23 @@ export default {
             data: data
         })
     },
+    kuaishouFetchList(data: { userId: string }) {
+        return request({
+            url: 'api/kuaishou-fetch-list',
+            method: 'post',
+            data: data
+        })
+    },
+    kuaishouCancelFetch() {
+        return request({
+            url: 'api/kuaishou-cancel-fetch',
+            method: 'post'
+        })
+    },
+    kuaishouFetchStatus() {
+        return request({
+            url: 'api/kuaishou-fetch-status',
+            method: 'post'
+        })
+    },
 }

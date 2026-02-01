@@ -95,7 +95,15 @@
     "start_err_content": "当前启动过程遇到了问题，是否重置应用？",
     "start_err_positiveText": "清理缓存并重启",
     "start_err_negativeText": "关闭软件",
-    "reset_app_tip": "此操作会删除已拦截数据以及本应用相关数据，请谨慎操作！"
+    "reset_app_tip": "此操作会删除已拦截数据以及本应用相关数据，请谨慎操作！",
+    "batch_fetch": "批量获取",
+    "batch_fetch_title": "批量获取视频列表",
+    "kuaishou_url_placeholder": "粘贴快手主页链接，例如 https://www.kuaishou.com/profile/xxxxx",
+    "kuaishou_invalid_url": "无效的快手主页链接",
+    "kuaishou_no_cookies": "未检测到Cookie，请先开启代理拦截并浏览快手主页",
+    "start_fetch": "开始获取",
+    "cancel_fetch": "取消获取",
+    "fetching": "获取中..."
   },
   "setting": {
     "restart_tip": "如果不清楚保持默认就行，修改后请重启软件",

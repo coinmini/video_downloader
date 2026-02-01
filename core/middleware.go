@@ -66,6 +66,12 @@ func HandleApi(w http.ResponseWriter, r *http.Request) bool {
 			httpServerOnce.batchExport(w, r)
 		case "/api/cert":
 			httpServerOnce.downCert(w, r)
+		case "/api/kuaishou-fetch-list":
+			httpServerOnce.kuaishouFetchList(w, r)
+		case "/api/kuaishou-cancel-fetch":
+			httpServerOnce.kuaishouCancelFetch(w, r)
+		case "/api/kuaishou-fetch-status":
+			httpServerOnce.kuaishouFetchStatus(w, r)
 		}
 		return true
 	}

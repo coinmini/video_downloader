@@ -95,7 +95,15 @@
     "start_err_content": "The current startup process has encountered an issue. Do you want to reset the application?",
     "start_err_positiveText": "Clear cache and restart",
     "start_err_negativeText": "Close the software",
-    "reset_app_tip": "This operation will delete intercepted data and data related to this application. Please proceed with caution!"
+    "reset_app_tip": "This operation will delete intercepted data and data related to this application. Please proceed with caution!",
+    "batch_fetch": "Batch Fetch",
+    "batch_fetch_title": "Batch Fetch Video List",
+    "kuaishou_url_placeholder": "Paste Kuaishou profile URL, e.g., https://www.kuaishou.com/profile/xxxxx",
+    "kuaishou_invalid_url": "Invalid Kuaishou profile URL",
+    "kuaishou_no_cookies": "No cookies detected. Please enable proxy and browse the Kuaishou profile page first.",
+    "start_fetch": "Start Fetching",
+    "cancel_fetch": "Cancel Fetch",
+    "fetching": "Fetching..."
   },
   "setting": {
     "restart_tip": "Keep default if unsure, please restart software after modification",
