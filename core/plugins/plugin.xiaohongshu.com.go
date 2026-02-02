@@ -20,14 +20,19 @@ import (
 )
 
 type XiaohongshuPlugin struct {
-	bridge             *shared.Bridge
-	cookies            string
-	cookiesMu          sync.RWMutex
-	totalNotes         int
-	totalMu            sync.Mutex
-	fetchSem           chan struct{} // limits concurrent feed API requests
-	fetchSemOnce       sync.Once
-	lastFeedRateLimited bool // set by fetchVideoFromFeedAPI when rate limited
+	bridge        *shared.Bridge
+	cookies       string
+	cookiesMu     sync.RWMutex
+	totalNotes    int
+	totalMu       sync.Mutex
+	fetchSem      chan struct{} // limits concurrent feed API requests
+	fetchSemOnce  sync.Once
+	pendingVideos sync.Map // noteId -> true, tracks in-flight video fetches
+
+	// Adaptive rate limiting
+	baseDelaySec  float64    // current base delay between requests (starts at 5, increases on 461)
+	delayMu       sync.Mutex // protects baseDelaySec
+	consecutiveOK int        // consecutive successful requests (used to gradually reduce delay)
 }
 
 func (p *XiaohongshuPlugin) SetBridge(bridge *shared.Bridge) {
@@ -443,11 +448,15 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 	if noteType == "video" {
 		// Video note: call feed API with xsec_token to get real video URL
 		noteUrl := fmt.Sprintf("https://www.xiaohongshu.com/explore/%s", noteId)
+
+		// Skip if already successfully fetched (marked) or currently in-flight
 		urlSign := shared.Md5(noteUrl)
 		if p.bridge.MediaIsMarked(urlSign) {
 			return false
 		}
-		p.bridge.MarkMedia(urlSign)
+		if _, loaded := p.pendingVideos.LoadOrStore(noteId, true); loaded {
+			return false // already being fetched
+		}
 
 		go p.fetchAndEmitVideo(noteId, noteUrl, coverUrl, displayTitle, xsecToken, otherData)
 		return true
@@ -504,61 +513,92 @@ func (p *XiaohongshuPlugin) releaseFetchSlot() {
 	<-p.fetchSem
 }
 
+// getBaseDelay returns the current adaptive base delay in seconds.
+func (p *XiaohongshuPlugin) getBaseDelay() float64 {
+	p.delayMu.Lock()
+	defer p.delayMu.Unlock()
+	if p.baseDelaySec < 5 {
+		p.baseDelaySec = 5 // minimum 5 seconds
+	}
+	return p.baseDelaySec
+}
+
+// onFeedSuccess records a successful feed API call and gradually reduces delay.
+func (p *XiaohongshuPlugin) onFeedSuccess() {
+	p.delayMu.Lock()
+	defer p.delayMu.Unlock()
+	p.consecutiveOK++
+	// After 5 consecutive successes, reduce delay by 20% (min 5s)
+	if p.consecutiveOK >= 5 {
+		p.consecutiveOK = 0
+		p.baseDelaySec *= 0.8
+		if p.baseDelaySec < 5 {
+			p.baseDelaySec = 5
+		}
+		log.Printf("[xiaohongshu] rate limit eased, reducing base delay to %.1fs", p.baseDelaySec)
+	}
+}
+
+// onFeedRateLimited records a rate limit hit and increases the base delay.
+func (p *XiaohongshuPlugin) onFeedRateLimited() {
+	p.delayMu.Lock()
+	defer p.delayMu.Unlock()
+	p.consecutiveOK = 0
+	// Double the delay on rate limit, cap at 120s
+	if p.baseDelaySec < 5 {
+		p.baseDelaySec = 5
+	}
+	p.baseDelaySec *= 2
+	if p.baseDelaySec > 120 {
+		p.baseDelaySec = 120
+	}
+	log.Printf("[xiaohongshu] rate limited! increasing base delay to %.1fs", p.baseDelaySec)
+}
+
 // fetchAndEmitVideo calls the feed API with signed headers to get the real video URL.
-// If successful, emits the CDN video URL; otherwise falls back to the note web URL.
+// If successful, emits the CDN video URL and marks it; on failure, removes from pending
+// so that a future scroll can retry.
 func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, displayTitle, xsecToken string, otherData map[string]string) {
 	p.acquireFetchSlot()
 	defer p.releaseFetchSlot()
 
-	// Delay between consecutive feed API requests to avoid rate limiting
-	time.Sleep(time.Duration(1500+rand.Intn(1000)) * time.Millisecond)
+	// Adaptive delay: use current base delay + random jitter
+	baseDelay := p.getBaseDelay()
+	jitter := float64(rand.Intn(3000)) / 1000.0 // 0-3s jitter
+	sleepDur := time.Duration((baseDelay+jitter)*1000) * time.Millisecond
+	time.Sleep(sleepDur)
 
 	cookies := p.getCookies()
 	videoUrl := ""
 	if cookies == "" {
 		log.Printf("[xiaohongshu] no cookies available for %s", noteId)
 	} else {
-		// Retry up to 3 times on rate limiting
+		// Retry up to 3 times on rate limiting; each retry waits the current (already increased) base delay
 		for attempt := 0; attempt < 3; attempt++ {
-			videoUrl = p.fetchVideoFromFeedAPI(noteId, xsecToken, cookies)
-			if videoUrl != "" || !p.lastFeedRateLimited {
+			rateLimited := false
+			videoUrl, rateLimited = p.fetchVideoFromFeedAPI(noteId, xsecToken, cookies)
+			if videoUrl != "" || !rateLimited {
 				break
 			}
-			waitSec := 5 * (attempt + 1) // 5s, 10s, 15s
-			log.Printf("[xiaohongshu] rate limited for %s, waiting %ds before retry (attempt %d/3)", noteId, waitSec, attempt+1)
-			time.Sleep(time.Duration(waitSec) * time.Second)
-			// Refresh cookies in case they were updated
+			// onFeedRateLimited already doubled the delay; wait the new base delay
+			waitDelay := p.getBaseDelay()
+			log.Printf("[xiaohongshu] rate limited for %s, waiting %.0fs before retry (attempt %d/3)", noteId, waitDelay, attempt+1)
+			time.Sleep(time.Duration(waitDelay*1000) * time.Millisecond)
 			cookies = p.getCookies()
 		}
 	}
 
 	if videoUrl == "" {
-		// Fallback: emit the note web URL as placeholder
-		log.Printf("[xiaohongshu] could not fetch video URL for %s, using note URL", noteId)
-		urlSign := shared.Md5(noteUrl)
-		id, err := gonanoid.New()
-		if err != nil {
-			id = urlSign
-		}
-		res := shared.MediaInfo{
-			Id:          id,
-			Url:         noteUrl,
-			UrlSign:     urlSign,
-			CoverUrl:    coverUrl,
-			Size:        0,
-			Domain:      "xiaohongshu.com",
-			Classify:    "video",
-			Suffix:      ".mp4",
-			Status:      shared.DownloadStatusReady,
-			SavePath:    "",
-			DecodeKey:   "",
-			OtherData:   otherData,
-			Description: displayTitle,
-			ContentType: "video/mp4",
-		}
-		p.bridge.Send("newResources", res)
+		// Failed: remove from pending so retry is possible on next scroll
+		p.pendingVideos.Delete(noteId)
+		log.Printf("[xiaohongshu] could not fetch video URL for %s, will retry on next scroll", noteId)
 		return
 	}
+
+	// Success: mark as done so it won't be retried
+	noteUrlSign := shared.Md5(noteUrl)
+	p.bridge.MarkMedia(noteUrlSign)
+	p.pendingVideos.Delete(noteId)
 
 	urlSign := shared.Md5(videoUrl)
 	id, err := gonanoid.New()
@@ -581,13 +621,14 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 		Description: displayTitle,
 		ContentType: "video/mp4",
 	}
+	p.bridge.MarkMedia(urlSign)
 	p.bridge.Send("newResources", res)
 	log.Printf("[xiaohongshu] fetched video URL for note %s: %s", noteId, displayTitle)
 }
 
 // fetchVideoFromFeedAPI calls the XHS feed API directly with signed headers
-// to get the video download URL for a given note.
-func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies string) string {
+// to get the video download URL for a given note. Returns (videoUrl, rateLimited).
+func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies string) (string, bool) {
 	apiPath := "/api/sns/web/v1/feed"
 	apiURL := "https://edith.xiaohongshu.com" + apiPath
 
@@ -599,12 +640,10 @@ func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies str
 		"xsec_token":     xsecToken,
 	}
 
-	p.lastFeedRateLimited = false
-
 	signResult, err := xhsign.Sign("POST", apiPath, cookies, payload)
 	if err != nil {
 		log.Printf("[xiaohongshu] sign failed for %s: %v", noteId, err)
-		return ""
+		return "", false
 	}
 
 	bodyBytes, _ := json.Marshal(payload)
@@ -612,7 +651,7 @@ func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies str
 	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		log.Printf("[xiaohongshu] create feed request failed for %s: %v", noteId, err)
-		return ""
+		return "", false
 	}
 
 	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
@@ -636,40 +675,44 @@ func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies str
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[xiaohongshu] feed API request failed for %s: %v", noteId, err)
-		return ""
+		return "", false
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("[xiaohongshu] read feed response failed for %s: %v", noteId, err)
-		return ""
+		return "", false
 	}
 
 	if resp.StatusCode != 200 {
 		log.Printf("[xiaohongshu] feed API status %d for %s: %s", resp.StatusCode, noteId, string(respBody[:min(len(respBody), 200)]))
 		if resp.StatusCode == 461 && strings.Contains(string(respBody), "300013") {
-			p.lastFeedRateLimited = true
+			p.onFeedRateLimited()
+			return "", true
 		}
-		return ""
+		return "", false
 	}
+
+	// Success — notify adaptive delay
+	p.onFeedSuccess()
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		log.Printf("[xiaohongshu] parse feed response failed for %s: %v", noteId, err)
-		return ""
+		return "", false
 	}
 
 	data, ok := result["data"].(map[string]interface{})
 	if !ok {
 		log.Printf("[xiaohongshu] feed response missing data for %s", noteId)
-		return ""
+		return "", false
 	}
 
 	items, ok := data["items"].([]interface{})
 	if !ok || len(items) == 0 {
 		log.Printf("[xiaohongshu] feed response no items for %s", noteId)
-		return ""
+		return "", false
 	}
 
 	for _, item := range items {
@@ -683,12 +726,12 @@ func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies str
 		}
 		videoUrl := p.extractVideoUrl(noteCard)
 		if videoUrl != "" {
-			return videoUrl
+			return videoUrl, false
 		}
 	}
 
 	log.Printf("[xiaohongshu] no video URL found in feed response for %s", noteId)
-	return ""
+	return "", false
 }
 
 func min(a, b int) int {
