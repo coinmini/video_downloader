@@ -274,6 +274,8 @@ const profilePhotoListQuery = `query visionProfilePhotoList($userId: String, $pc
           caption
           likeCount
           realLikeCount
+          commentCount
+          viewCount
           coverUrl
           photoUrl
           liked
@@ -421,6 +423,18 @@ func (p *KuaishouPlugin) emitVideo(feed map[string]interface{}) {
 		id = urlSign
 	}
 
+	otherData := map[string]string{}
+	for _, key := range []string{"likeCount", "viewCount"} {
+		if raw, exists := photo[key]; exists && raw != nil {
+			switch v := raw.(type) {
+			case float64:
+				otherData[key] = fmt.Sprintf("%.0f", v)
+			case string:
+				otherData[key] = v
+			}
+		}
+	}
+
 	res := shared.MediaInfo{
 		Id:          id,
 		Url:         photoUrl,
@@ -433,7 +447,7 @@ func (p *KuaishouPlugin) emitVideo(feed map[string]interface{}) {
 		Status:      shared.DownloadStatusReady,
 		SavePath:    "",
 		DecodeKey:   "",
-		OtherData:   map[string]string{},
+		OtherData:   otherData,
 		Description: caption,
 		ContentType: "video/mp4",
 	}

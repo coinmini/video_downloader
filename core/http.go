@@ -12,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"res-downloader/core/shared"
+	"strconv"
 	"strings"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/xuri/excelize/v2"
 )
 
 type respData map[string]interface{}
@@ -444,4 +446,76 @@ func (h *HttpServer) batchExport(w http.ResponseWriter, r *http.Request) {
 	h.success(w, respData{
 		"file_name": fileName,
 	})
+}
+
+type exportDataItem struct {
+	Description string `json:"Description"`
+	LikeCount   string `json:"likeCount"`
+	ViewCount   string `json:"viewCount"`
+	Url         string `json:"Url"`
+}
+
+func (h *HttpServer) batchExportExcel(w http.ResponseWriter, r *http.Request) {
+	var data struct {
+		Items []exportDataItem `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		h.error(w, err.Error())
+		return
+	}
+
+	f := excelize.NewFile()
+	defer f.Close()
+
+	sheet := "Sheet1"
+
+	// Header style
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Size: 12},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#E8E8E8"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+
+	headers := []string{"序号", "描述", "点赞", "播放量", "链接"}
+	colWidths := []float64{8, 60, 12, 12, 80}
+	for i, header := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue(sheet, cell, header)
+		f.SetCellStyle(sheet, cell, cell, headerStyle)
+		col, _ := excelize.ColumnNumberToName(i + 1)
+		f.SetColWidth(sheet, col, col, colWidths[i])
+	}
+
+	for idx, item := range data.Items {
+		row := idx + 2
+		f.SetCellValue(sheet, cellName(1, row), idx+1)
+		f.SetCellValue(sheet, cellName(2, row), item.Description)
+		if v, err := strconv.ParseInt(item.LikeCount, 10, 64); err == nil {
+			f.SetCellValue(sheet, cellName(3, row), v)
+		} else {
+			f.SetCellValue(sheet, cellName(3, row), item.LikeCount)
+		}
+		if v, err := strconv.ParseInt(item.ViewCount, 10, 64); err == nil {
+			f.SetCellValue(sheet, cellName(4, row), v)
+		} else {
+			f.SetCellValue(sheet, cellName(4, row), item.ViewCount)
+		}
+		f.SetCellValue(sheet, cellName(5, row), item.Url)
+	}
+
+	fileName := filepath.Join(globalConfig.SaveDirectory, "res-downloader-"+shared.GetCurrentDateTimeFormatted()+".xlsx")
+	if err := f.SaveAs(fileName); err != nil {
+		h.error(w, err.Error())
+		return
+	}
+
+	_ = shared.OpenFolder(fileName)
+	h.success(w, respData{
+		"file_name": fileName,
+	})
+}
+
+func cellName(col, row int) string {
+	name, _ := excelize.CoordinatesToCellName(col, row)
+	return name
 }
