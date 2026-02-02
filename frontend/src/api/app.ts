@@ -120,6 +120,13 @@ export default {
             data: data
         })
     },
+    batchExportExcel(data: object) {
+        return request({
+            url: 'api/batch-export-excel',
+            method: 'post',
+            data: data
+        })
+    },
     kuaishouFetchList(data: { userId: string }) {
         return request({
             url: 'api/kuaishou-fetch-list',

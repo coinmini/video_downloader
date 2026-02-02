@@ -99,6 +99,14 @@
                   </template>
                   {{ t('index.export_url') }}
                 </NButton>
+                <NButton tertiary type="warning" @click.stop="batchExportExcel" class="my-1">
+                  <template #icon>
+                    <n-icon>
+                      <ArrowRedoCircleOutline/>
+                    </n-icon>
+                  </template>
+                  {{ t('index.export_data') }}
+                </NButton>
                 <NButton tertiary type="success" @click.stop="openBatchFetch" class="my-1">
                   <template #icon>
                     <n-icon>
@@ -464,6 +472,29 @@ const columns = ref<any[]>([
     }
   },
   {
+    title: computed(() => t("index.like_count")),
+    key: "likeCount",
+    width: 70,
+    sorter: (row1: appType.MediaInfo, row2: appType.MediaInfo) => {
+      const a = parseInt(row1.OtherData?.likeCount || "0") || 0
+      const b = parseInt(row2.OtherData?.likeCount || "0") || 0
+      return a - b
+    },
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.likeCount
+      return count ? count : ""
+    }
+  },
+  {
+    title: computed(() => t("index.view_count")),
+    key: "viewCount",
+    width: 80,
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.viewCount
+      return count ? count : ""
+    }
+  },
+  {
     title: computed(() => t("index.resource_size")),
     key: "Size",
     width: 120,
@@ -562,6 +593,18 @@ onMounted(() => {
   const cache = localStorage.getItem("resources-data")
   if (cache) {
     data.value = JSON.parse(cache)
+    // Reset stale "running" or "pending" items from previous session
+    let cacheChanged = false
+    for (const item of data.value) {
+      if (item.Status === 'running' || item.Status === 'pending') {
+        item.Status = 'ready'
+        item.SavePath = ''
+        cacheChanged = true
+      }
+    }
+    if (cacheChanged) {
+      cacheData()
+    }
   }
 
   const choiceCache = localStorage.getItem("remember-clear-choice")
@@ -637,6 +680,7 @@ onMounted(() => {
       }
     }
   })
+
 })
 
 watch(() => {
@@ -866,6 +910,42 @@ const batchExport = (type?: string) => {
   }
 
   appApi.batchExport({content: jsonData.join("\n")}).then((res: appType.Res) => {
+    loading.value = false
+    if (res.code === 0) {
+      window?.$message?.error(res.message)
+      return
+    }
+    window?.$message?.success(t("index.import_success"))
+    window?.$message?.info(t("index.save_path") + "：" + res.data?.file_name, {
+      duration: 5000
+    })
+  })
+}
+
+const batchExportExcel = () => {
+  if (checkedRowKeysValue.value.length <= 0) {
+    window?.$message?.error(t("index.use_data"))
+    return
+  }
+
+  if (!store.globalConfig.SaveDirectory) {
+    window?.$message?.error(t("index.save_path_empty"))
+    return
+  }
+
+  loadingText.value = t("common.loading")
+  loading.value = true
+
+  const items = data.value
+    .filter(item => checkedRowKeysValue.value.includes(item.Id))
+    .map(item => ({
+      Description: item.Description || "",
+      likeCount: item.OtherData?.likeCount || "",
+      viewCount: item.OtherData?.viewCount || "",
+      Url: item.Url || ""
+    }))
+
+  appApi.batchExportExcel({items}).then((res: appType.Res) => {
     loading.value = false
     if (res.code === 0) {
       window?.$message?.error(res.message)
