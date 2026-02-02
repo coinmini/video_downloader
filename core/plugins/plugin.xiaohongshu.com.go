@@ -18,8 +18,6 @@ import (
 
 type XiaohongshuPlugin struct {
 	bridge     *shared.Bridge
-	cookies    string
-	cookiesMu  sync.RWMutex
 	totalNotes int
 	totalMu    sync.Mutex
 }
@@ -33,11 +31,6 @@ func (p *XiaohongshuPlugin) Domains() []string {
 }
 
 func (p *XiaohongshuPlugin) OnRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	if cookieHeader := r.Header.Get("Cookie"); cookieHeader != "" {
-		p.cookiesMu.Lock()
-		p.cookies = cookieHeader
-		p.cookiesMu.Unlock()
-	}
 	return nil, nil
 }
 
@@ -73,8 +66,6 @@ func (p *XiaohongshuPlugin) OnResponse(resp *http.Response, ctx *goproxy.ProxyCt
 	return resp
 }
 
-// readAndDecodeBody reads the response body, handles gzip, and returns decoded JSON bytes
-// plus a replacement body for the browser.
 func (p *XiaohongshuPlugin) readAndDecodeBody(resp *http.Response) ([]byte, io.ReadCloser) {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -99,9 +90,8 @@ func (p *XiaohongshuPlugin) readAndDecodeBody(resp *http.Response) ([]byte, io.R
 	return jsonBytes, replacement
 }
 
-// parseUserPostedNotes handles the user_posted API response (profile page scroll).
-// For image notes: emits with cover CDN URL directly.
-// For video notes: emits with note web page URL (cover image as CoverUrl for preview).
+// parseUserPostedNotes handles the user_posted API response intercepted when
+// the user scrolls through a profile page. Emits both image and video notes.
 func (p *XiaohongshuPlugin) parseUserPostedNotes(bodyBytes []byte) {
 	notes := p.extractNotes(bodyBytes)
 	if notes == nil {
@@ -124,16 +114,11 @@ func (p *XiaohongshuPlugin) parseUserPostedNotes(bodyBytes []byte) {
 
 	if emitted > 0 {
 		log.Printf("[xiaohongshu] emitted %d notes (total: %d)", emitted, total)
-		p.bridge.Send("batchFetchProgress", map[string]interface{}{
-			"status":  "fetching",
-			"total":   total,
-			"message": fmt.Sprintf("已拦截 %d 个笔记（本次新增 %d 个）", total, emitted),
-		})
 	}
 }
 
-// parseFeedNote handles the feed API response (note detail page).
-// This contains the actual video URL for video notes.
+// parseFeedNote handles the feed API response intercepted when the user clicks
+// into a note detail page. Extracts the actual video download URL.
 func (p *XiaohongshuPlugin) parseFeedNote(bodyBytes []byte) {
 	var result map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
@@ -179,14 +164,12 @@ func (p *XiaohongshuPlugin) parseFeedNote(bodyBytes []byte) {
 	}
 }
 
-// extractVideoUrl extracts the actual video CDN URL from a note_card.
 func (p *XiaohongshuPlugin) extractVideoUrl(noteCard map[string]interface{}) string {
 	video, ok := noteCard["video"].(map[string]interface{})
 	if !ok {
 		return ""
 	}
 
-	// Try media.stream.h264[].master_url
 	media, ok := video["media"].(map[string]interface{})
 	if !ok {
 		return ""
@@ -197,7 +180,6 @@ func (p *XiaohongshuPlugin) extractVideoUrl(noteCard map[string]interface{}) str
 		return ""
 	}
 
-	// Try h264 first, then h265
 	for _, codec := range []string{"h264", "h265", "av1"} {
 		streams, ok := stream[codec].([]interface{})
 		if !ok || len(streams) == 0 {
@@ -218,7 +200,6 @@ func (p *XiaohongshuPlugin) extractVideoUrl(noteCard map[string]interface{}) str
 	return ""
 }
 
-// emitFeedVideo emits a video resource from the feed (note detail) API.
 func (p *XiaohongshuPlugin) emitFeedVideo(noteCard map[string]interface{}, noteId string, videoUrl string) {
 	urlSign := shared.Md5(videoUrl)
 	if p.bridge.MediaIsMarked(urlSign) {
@@ -276,7 +257,6 @@ func (p *XiaohongshuPlugin) emitFeedVideo(noteCard map[string]interface{}, noteI
 	log.Printf("[xiaohongshu] emitted video from feed: %s", displayTitle)
 }
 
-// emitFeedImages emits image resources from the feed (note detail) API.
 func (p *XiaohongshuPlugin) emitFeedImages(noteCard map[string]interface{}, noteId string) {
 	imageList, ok := noteCard["image_list"].([]interface{})
 	if !ok || len(imageList) == 0 {
@@ -299,7 +279,6 @@ func (p *XiaohongshuPlugin) emitFeedImages(noteCard map[string]interface{}, note
 			continue
 		}
 
-		// Try url_default first (high quality), then url
 		imageUrl := ""
 		if urlDefault, ok := imgMap["url_default"].(string); ok && urlDefault != "" {
 			imageUrl = urlDefault
@@ -318,7 +297,6 @@ func (p *XiaohongshuPlugin) emitFeedImages(noteCard map[string]interface{}, note
 			continue
 		}
 
-		// Ensure https
 		if strings.HasPrefix(imageUrl, "http://") {
 			imageUrl = "https://" + imageUrl[7:]
 		}
@@ -343,7 +321,6 @@ func (p *XiaohongshuPlugin) emitFeedImages(noteCard map[string]interface{}, note
 			otherData["likeCount"] = likeCount
 		}
 
-		// Determine suffix from URL
 		suffix := ".jpg"
 		if strings.Contains(imageUrl, ".png") {
 			suffix = ".png"
@@ -397,6 +374,9 @@ func (p *XiaohongshuPlugin) extractNotes(bodyBytes []byte) []interface{} {
 	return notesRaw
 }
 
+// emitUserPostedNote emits a note from the user_posted API.
+// Image notes: cover image URL used directly (downloadable).
+// Video notes: note web page URL with cover as preview (user clicks to get actual video via feed API).
 func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool {
 	noteId, _ := note["note_id"].(string)
 	if noteId == "" {
@@ -406,10 +386,8 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 	displayTitle, _ := note["display_title"].(string)
 	noteType, _ := note["type"].(string)
 
-	// Extract cover URL
 	coverUrl := ""
 	if cover, ok := note["cover"].(map[string]interface{}); ok {
-		// Try url_default first for higher quality
 		if urlDefault, ok := cover["url_default"].(string); ok && urlDefault != "" {
 			coverUrl = urlDefault
 		} else {
@@ -417,7 +395,14 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 		}
 	}
 
-	// Extract like count from interact_info
+	if coverUrl == "" {
+		return false
+	}
+
+	if strings.HasPrefix(coverUrl, "http://") {
+		coverUrl = "https://" + coverUrl[7:]
+	}
+
 	likeCount := ""
 	if interactInfo, ok := note["interact_info"].(map[string]interface{}); ok {
 		likeCount, _ = interactInfo["liked_count"].(string)
@@ -428,18 +413,13 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 		otherData["likeCount"] = likeCount
 	}
 
-	if noteType == "normal" {
-		// Image note: use cover CDN URL directly for download
-		if coverUrl == "" {
-			return false
-		}
+	if noteType == "video" {
+		// Video note: emit with note web URL and cover as preview.
+		// Actual video download URL will be captured when the user clicks into
+		// the note detail page (feed API intercepted by OnResponse).
+		noteUrl := fmt.Sprintf("https://www.xiaohongshu.com/explore/%s", noteId)
 
-		// Ensure https
-		if strings.HasPrefix(coverUrl, "http://") {
-			coverUrl = "https://" + coverUrl[7:]
-		}
-
-		urlSign := shared.Md5(coverUrl)
+		urlSign := shared.Md5(noteUrl)
 		if p.bridge.MediaIsMarked(urlSign) {
 			return false
 		}
@@ -449,28 +429,21 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 			id = urlSign
 		}
 
-		suffix := ".jpg"
-		if strings.Contains(coverUrl, ".png") {
-			suffix = ".png"
-		} else if strings.Contains(coverUrl, ".webp") {
-			suffix = ".webp"
-		}
-
 		res := shared.MediaInfo{
 			Id:          id,
-			Url:         coverUrl,
+			Url:         noteUrl,
 			UrlSign:     urlSign,
 			CoverUrl:    coverUrl,
 			Size:        0,
 			Domain:      "xiaohongshu.com",
-			Classify:    "image",
-			Suffix:      suffix,
+			Classify:    "video",
+			Suffix:      ".mp4",
 			Status:      shared.DownloadStatusReady,
 			SavePath:    "",
 			DecodeKey:   "",
 			OtherData:   otherData,
 			Description: displayTitle,
-			ContentType: "image/jpeg",
+			ContentType: "video/mp4",
 		}
 
 		p.bridge.MarkMedia(urlSign)
@@ -478,19 +451,42 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 		return true
 	}
 
-	// Video notes: skip here. Actual video URLs are captured from the feed API
-	// when the user clicks into a note detail page.
-	return false
-}
+	// Image note: use cover CDN URL directly for download
+	urlSign := shared.Md5(coverUrl)
+	if p.bridge.MediaIsMarked(urlSign) {
+		return false
+	}
 
-func (p *XiaohongshuPlugin) GetCookies() string {
-	p.cookiesMu.RLock()
-	defer p.cookiesMu.RUnlock()
-	return p.cookies
-}
+	id, err := gonanoid.New()
+	if err != nil {
+		id = urlSign
+	}
 
-func (p *XiaohongshuPlugin) HasCookies() bool {
-	p.cookiesMu.RLock()
-	defer p.cookiesMu.RUnlock()
-	return p.cookies != ""
+	suffix := ".jpg"
+	if strings.Contains(coverUrl, ".png") {
+		suffix = ".png"
+	} else if strings.Contains(coverUrl, ".webp") {
+		suffix = ".webp"
+	}
+
+	res := shared.MediaInfo{
+		Id:          id,
+		Url:         coverUrl,
+		UrlSign:     urlSign,
+		CoverUrl:    coverUrl,
+		Size:        0,
+		Domain:      "xiaohongshu.com",
+		Classify:    "image",
+		Suffix:      suffix,
+		Status:      shared.DownloadStatusReady,
+		SavePath:    "",
+		DecodeKey:   "",
+		OtherData:   otherData,
+		Description: displayTitle,
+		ContentType: "image/jpeg",
+	}
+
+	p.bridge.MarkMedia(urlSign)
+	p.bridge.Send("newResources", res)
+	return true
 }

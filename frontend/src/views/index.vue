@@ -1098,20 +1098,26 @@ const extractKuaishouUserId = (url: string): string => {
   return ""
 }
 
-
 const openBatchFetch = async () => {
   showBatchFetch.value = true
   batchFetchMessage.value = ""
   batchFetchCookieWarning.value = ""
 
   const ksRes = await appApi.kuaishouFetchStatus()
-  batchFetching.value = ksRes.code === 1 && ksRes.data.isFetching
+  if (ksRes.code === 1 && ksRes.data.isFetching) {
+    batchFetching.value = true
+  } else {
+    batchFetching.value = false
+  }
 }
 
 const startBatchFetch = async () => {
   const url = batchFetchUrl.value.trim()
 
-  if (url.includes("kuaishou.com")) {
+  if (url.includes("xiaohongshu.com") || url.includes("xhslink.com")) {
+    window?.$message?.info(t("index.xiaohongshu_passive_tip"))
+    return
+  } else if (url.includes("kuaishou.com")) {
     const userId = extractKuaishouUserId(url)
     if (!userId) {
       window?.$message?.error(t("index.kuaishou_invalid_url"))
@@ -1127,8 +1133,6 @@ const startBatchFetch = async () => {
       batchFetchMessage.value = res.message
       window?.$message?.error(res.message)
     }
-  } else if (url.includes("xiaohongshu.com") || url.includes("xhslink.com")) {
-    window?.$message?.info(t("index.xiaohongshu_passive_tip"))
   } else {
     window?.$message?.error(t("index.batch_fetch_invalid_url"))
   }
