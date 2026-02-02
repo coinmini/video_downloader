@@ -105,7 +105,7 @@
     "batch_fetch_invalid_url": "无法识别的链接，请粘贴快手主页链接",
     "kuaishou_invalid_url": "无效的快手主页链接",
     "kuaishou_no_cookies": "未检测到Cookie，请先开启代理拦截并浏览快手主页",
-    "xiaohongshu_passive_tip": "小红书请直接在浏览器中打开用户主页并滑动页面，资源会自动出现在列表中。点击视频笔记可获取视频下载链接。",
+    "xiaohongshu_passive_tip": "小红书请直接在浏览器中打开用户主页并滑动页面，图片和视频资源会自动出现在列表中（视频下载链接会自动获取）。",
     "start_fetch": "开始获取",
     "cancel_fetch": "取消获取",
     "fetching": "获取中..."

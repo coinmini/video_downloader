@@ -9,17 +9,23 @@ import (
 	"log"
 	"net/http"
 	"res-downloader/core/shared"
+	"res-downloader/core/xhsign"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/elazarl/goproxy"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 )
 
 type XiaohongshuPlugin struct {
-	bridge     *shared.Bridge
-	totalNotes int
-	totalMu    sync.Mutex
+	bridge      *shared.Bridge
+	cookies     string
+	cookiesMu   sync.RWMutex
+	totalNotes  int
+	totalMu     sync.Mutex
+	fetchSem    chan struct{} // limits concurrent HTML fetches
+	fetchSemOnce sync.Once
 }
 
 func (p *XiaohongshuPlugin) SetBridge(bridge *shared.Bridge) {
@@ -31,7 +37,20 @@ func (p *XiaohongshuPlugin) Domains() []string {
 }
 
 func (p *XiaohongshuPlugin) OnRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	if r.Host == "edith.xiaohongshu.com" || r.Host == "www.xiaohongshu.com" {
+		if cookieHeader := r.Header.Get("Cookie"); cookieHeader != "" {
+			p.cookiesMu.Lock()
+			p.cookies = cookieHeader
+			p.cookiesMu.Unlock()
+		}
+	}
 	return nil, nil
+}
+
+func (p *XiaohongshuPlugin) getCookies() string {
+	p.cookiesMu.RLock()
+	defer p.cookiesMu.RUnlock()
+	return p.cookies
 }
 
 func (p *XiaohongshuPlugin) OnResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
@@ -376,7 +395,7 @@ func (p *XiaohongshuPlugin) extractNotes(bodyBytes []byte) []interface{} {
 
 // emitUserPostedNote emits a note from the user_posted API.
 // Image notes: cover image URL used directly (downloadable).
-// Video notes: note web page URL with cover as preview (user clicks to get actual video via feed API).
+// Video notes: calls feed API with xsec_token to get real video URL.
 func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool {
 	noteId, _ := note["note_id"].(string)
 	if noteId == "" {
@@ -385,6 +404,12 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 
 	displayTitle, _ := note["display_title"].(string)
 	noteType, _ := note["type"].(string)
+
+	// Extract xsec_token from the note (required for feed API)
+	xsecToken, _ := note["xsec_token"].(string)
+	if noteType == "video" && xsecToken == "" {
+		log.Printf("[xiaohongshu] WARNING: no xsec_token found for video note %s", noteId)
+	}
 
 	coverUrl := ""
 	if cover, ok := note["cover"].(map[string]interface{}); ok {
@@ -414,40 +439,15 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 	}
 
 	if noteType == "video" {
-		// Video note: emit with note web URL and cover as preview.
-		// Actual video download URL will be captured when the user clicks into
-		// the note detail page (feed API intercepted by OnResponse).
+		// Video note: call feed API with xsec_token to get real video URL
 		noteUrl := fmt.Sprintf("https://www.xiaohongshu.com/explore/%s", noteId)
-
 		urlSign := shared.Md5(noteUrl)
 		if p.bridge.MediaIsMarked(urlSign) {
 			return false
 		}
-
-		id, err := gonanoid.New()
-		if err != nil {
-			id = urlSign
-		}
-
-		res := shared.MediaInfo{
-			Id:          id,
-			Url:         noteUrl,
-			UrlSign:     urlSign,
-			CoverUrl:    coverUrl,
-			Size:        0,
-			Domain:      "xiaohongshu.com",
-			Classify:    "video",
-			Suffix:      ".mp4",
-			Status:      shared.DownloadStatusReady,
-			SavePath:    "",
-			DecodeKey:   "",
-			OtherData:   otherData,
-			Description: displayTitle,
-			ContentType: "video/mp4",
-		}
-
 		p.bridge.MarkMedia(urlSign)
-		p.bridge.Send("newResources", res)
+
+		go p.fetchAndEmitVideo(noteId, noteUrl, coverUrl, displayTitle, xsecToken, otherData)
 		return true
 	}
 
@@ -489,4 +489,192 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 	p.bridge.MarkMedia(urlSign)
 	p.bridge.Send("newResources", res)
 	return true
+}
+
+func (p *XiaohongshuPlugin) acquireFetchSlot() {
+	p.fetchSemOnce.Do(func() {
+		p.fetchSem = make(chan struct{}, 3) // max 3 concurrent HTML fetches
+	})
+	p.fetchSem <- struct{}{}
+}
+
+func (p *XiaohongshuPlugin) releaseFetchSlot() {
+	<-p.fetchSem
+}
+
+// fetchAndEmitVideo calls the feed API with signed headers to get the real video URL.
+// If successful, emits the CDN video URL; otherwise falls back to the note web URL.
+func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, displayTitle, xsecToken string, otherData map[string]string) {
+	p.acquireFetchSlot()
+	defer p.releaseFetchSlot()
+
+	cookies := p.getCookies()
+	videoUrl := ""
+	if cookies == "" {
+		log.Printf("[xiaohongshu] no cookies available for %s", noteId)
+	} else {
+		videoUrl = p.fetchVideoFromFeedAPI(noteId, xsecToken, cookies)
+	}
+
+	if videoUrl == "" {
+		// Fallback: emit the note web URL as placeholder
+		log.Printf("[xiaohongshu] could not fetch video URL for %s, using note URL", noteId)
+		urlSign := shared.Md5(noteUrl)
+		id, err := gonanoid.New()
+		if err != nil {
+			id = urlSign
+		}
+		res := shared.MediaInfo{
+			Id:          id,
+			Url:         noteUrl,
+			UrlSign:     urlSign,
+			CoverUrl:    coverUrl,
+			Size:        0,
+			Domain:      "xiaohongshu.com",
+			Classify:    "video",
+			Suffix:      ".mp4",
+			Status:      shared.DownloadStatusReady,
+			SavePath:    "",
+			DecodeKey:   "",
+			OtherData:   otherData,
+			Description: displayTitle,
+			ContentType: "video/mp4",
+		}
+		p.bridge.Send("newResources", res)
+		return
+	}
+
+	urlSign := shared.Md5(videoUrl)
+	id, err := gonanoid.New()
+	if err != nil {
+		id = urlSign
+	}
+	res := shared.MediaInfo{
+		Id:          id,
+		Url:         videoUrl,
+		UrlSign:     urlSign,
+		CoverUrl:    coverUrl,
+		Size:        0,
+		Domain:      "xiaohongshu.com",
+		Classify:    "video",
+		Suffix:      ".mp4",
+		Status:      shared.DownloadStatusReady,
+		SavePath:    "",
+		DecodeKey:   "",
+		OtherData:   otherData,
+		Description: displayTitle,
+		ContentType: "video/mp4",
+	}
+	p.bridge.Send("newResources", res)
+	log.Printf("[xiaohongshu] fetched video URL for note %s: %s", noteId, displayTitle)
+}
+
+// fetchVideoFromFeedAPI calls the XHS feed API directly with signed headers
+// to get the video download URL for a given note.
+func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies string) string {
+	apiPath := "/api/sns/web/v1/feed"
+	apiURL := "https://edith.xiaohongshu.com" + apiPath
+
+	payload := map[string]interface{}{
+		"source_note_id": noteId,
+		"image_formats":  []string{"jpg", "webp", "avif"},
+		"extra":          map[string]interface{}{"need_body_topic": 1},
+		"xsec_source":    "pc_feed",
+		"xsec_token":     xsecToken,
+	}
+
+	log.Printf("[xiaohongshu] feed API request for %s, xsec_token=%q", noteId, xsecToken)
+
+	signResult, err := xhsign.Sign("POST", apiPath, cookies, payload)
+	if err != nil {
+		log.Printf("[xiaohongshu] sign failed for %s: %v", noteId, err)
+		return ""
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		log.Printf("[xiaohongshu] create feed request failed for %s: %v", noteId, err)
+		return ""
+	}
+
+	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
+	req.Header.Set("Cookie", cookies)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Origin", "https://www.xiaohongshu.com")
+	req.Header.Set("Referer", "https://www.xiaohongshu.com/")
+	req.Header.Set("X-s", signResult.XS)
+	req.Header.Set("X-t", signResult.XT)
+	req.Header.Set("X-s-common", signResult.XSCommon)
+	req.Header.Set("X-b3-traceid", signResult.XB3TraceID)
+	req.Header.Set("X-xray-traceid", signResult.XXrayTraceID)
+
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			Proxy: nil, // bypass local proxy
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[xiaohongshu] feed API request failed for %s: %v", noteId, err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[xiaohongshu] read feed response failed for %s: %v", noteId, err)
+		return ""
+	}
+
+	if resp.StatusCode != 200 {
+		log.Printf("[xiaohongshu] feed API status %d for %s: %s", resp.StatusCode, noteId, string(respBody[:min(len(respBody), 200)]))
+		return ""
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		log.Printf("[xiaohongshu] parse feed response failed for %s: %v", noteId, err)
+		return ""
+	}
+
+	data, ok := result["data"].(map[string]interface{})
+	if !ok {
+		log.Printf("[xiaohongshu] feed response missing data for %s", noteId)
+		return ""
+	}
+
+	items, ok := data["items"].([]interface{})
+	if !ok || len(items) == 0 {
+		log.Printf("[xiaohongshu] feed response no items for %s", noteId)
+		return ""
+	}
+
+	for _, item := range items {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		noteCard, ok := itemMap["note_card"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		videoUrl := p.extractVideoUrl(noteCard)
+		if videoUrl != "" {
+			return videoUrl
+		}
+	}
+
+	log.Printf("[xiaohongshu] no video URL found in feed response for %s", noteId)
+	return ""
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
