@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"res-downloader/core/shared"
 	"res-downloader/core/xhsign"
@@ -19,13 +20,14 @@ import (
 )
 
 type XiaohongshuPlugin struct {
-	bridge      *shared.Bridge
-	cookies     string
-	cookiesMu   sync.RWMutex
-	totalNotes  int
-	totalMu     sync.Mutex
-	fetchSem    chan struct{} // limits concurrent HTML fetches
-	fetchSemOnce sync.Once
+	bridge             *shared.Bridge
+	cookies            string
+	cookiesMu          sync.RWMutex
+	totalNotes         int
+	totalMu            sync.Mutex
+	fetchSem           chan struct{} // limits concurrent feed API requests
+	fetchSemOnce       sync.Once
+	lastFeedRateLimited bool // set by fetchVideoFromFeedAPI when rate limited
 }
 
 func (p *XiaohongshuPlugin) SetBridge(bridge *shared.Bridge) {
@@ -493,7 +495,7 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 
 func (p *XiaohongshuPlugin) acquireFetchSlot() {
 	p.fetchSemOnce.Do(func() {
-		p.fetchSem = make(chan struct{}, 3) // max 3 concurrent HTML fetches
+		p.fetchSem = make(chan struct{}, 1) // serial: one feed API request at a time
 	})
 	p.fetchSem <- struct{}{}
 }
@@ -508,12 +510,26 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 	p.acquireFetchSlot()
 	defer p.releaseFetchSlot()
 
+	// Delay between consecutive feed API requests to avoid rate limiting
+	time.Sleep(time.Duration(1500+rand.Intn(1000)) * time.Millisecond)
+
 	cookies := p.getCookies()
 	videoUrl := ""
 	if cookies == "" {
 		log.Printf("[xiaohongshu] no cookies available for %s", noteId)
 	} else {
-		videoUrl = p.fetchVideoFromFeedAPI(noteId, xsecToken, cookies)
+		// Retry up to 3 times on rate limiting
+		for attempt := 0; attempt < 3; attempt++ {
+			videoUrl = p.fetchVideoFromFeedAPI(noteId, xsecToken, cookies)
+			if videoUrl != "" || !p.lastFeedRateLimited {
+				break
+			}
+			waitSec := 5 * (attempt + 1) // 5s, 10s, 15s
+			log.Printf("[xiaohongshu] rate limited for %s, waiting %ds before retry (attempt %d/3)", noteId, waitSec, attempt+1)
+			time.Sleep(time.Duration(waitSec) * time.Second)
+			// Refresh cookies in case they were updated
+			cookies = p.getCookies()
+		}
 	}
 
 	if videoUrl == "" {
@@ -583,7 +599,7 @@ func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies str
 		"xsec_token":     xsecToken,
 	}
 
-	log.Printf("[xiaohongshu] feed API request for %s, xsec_token=%q", noteId, xsecToken)
+	p.lastFeedRateLimited = false
 
 	signResult, err := xhsign.Sign("POST", apiPath, cookies, payload)
 	if err != nil {
@@ -632,6 +648,9 @@ func (p *XiaohongshuPlugin) fetchVideoFromFeedAPI(noteId, xsecToken, cookies str
 
 	if resp.StatusCode != 200 {
 		log.Printf("[xiaohongshu] feed API status %d for %s: %s", resp.StatusCode, noteId, string(respBody[:min(len(respBody), 200)]))
+		if resp.StatusCode == 461 && strings.Contains(string(respBody), "300013") {
+			p.lastFeedRateLimited = true
+		}
 		return ""
 	}
 
