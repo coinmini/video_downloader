@@ -151,8 +151,10 @@
       <n-space vertical>
         <n-input
             v-model:value="batchFetchUrl"
-            :placeholder="t('index.kuaishou_url_placeholder')"
+            :placeholder="t('index.batch_fetch_placeholder')"
             clearable
+            type="textarea"
+            :autosize="{ minRows: 1, maxRows: 3 }"
         />
         <n-space>
           <n-button
@@ -171,8 +173,8 @@
             {{ t('index.cancel_fetch') }}
           </n-button>
         </n-space>
-        <n-alert v-if="!batchFetchHasCookies" type="warning">
-          {{ t('index.kuaishou_no_cookies') }}
+        <n-alert v-if="batchFetchCookieWarning" type="warning">
+          {{ batchFetchCookieWarning }}
         </n-alert>
         <n-alert v-if="batchFetchMessage" :type="batchFetchAlertType">
           {{ batchFetchMessage }}
@@ -548,7 +550,7 @@ const batchFetchUrl = ref("")
 const batchFetching = ref(false)
 const batchFetchMessage = ref("")
 const batchFetchStatus = ref("")
-const batchFetchHasCookies = ref(true)
+const batchFetchCookieWarning = ref("")
 const batchFetchAlertType = computed(() => {
   if (batchFetchStatus.value === "error") return "error"
   if (batchFetchStatus.value === "done") return "success"
@@ -1045,7 +1047,7 @@ const clear = async () => {
     checkedRowKeysValue.value = []
   } else {
     data.value.forEach((item, index) => {
-      if (item.Status === "pending" || item.Status === "running") {
+      if (item.Status === "pending") {
         newData.push(item)
       } else {
         signs.push(item.UrlSign)
@@ -1096,33 +1098,39 @@ const extractKuaishouUserId = (url: string): string => {
   return ""
 }
 
+
 const openBatchFetch = async () => {
   showBatchFetch.value = true
   batchFetchMessage.value = ""
-  const res = await appApi.kuaishouFetchStatus()
-  if (res.code === 1) {
-    batchFetchHasCookies.value = res.data.hasCookies
-    batchFetching.value = res.data.isFetching
-  }
+  batchFetchCookieWarning.value = ""
+
+  const ksRes = await appApi.kuaishouFetchStatus()
+  batchFetching.value = ksRes.code === 1 && ksRes.data.isFetching
 }
 
 const startBatchFetch = async () => {
-  const userId = extractKuaishouUserId(batchFetchUrl.value)
-  if (!userId) {
-    window?.$message?.error(t("index.kuaishou_invalid_url"))
-    return
-  }
+  const url = batchFetchUrl.value.trim()
 
-  batchFetching.value = true
-  batchFetchMessage.value = ""
-  batchFetchStatus.value = "fetching"
-
-  const res = await appApi.kuaishouFetchList({userId})
-  if (res.code === 0) {
-    batchFetching.value = false
-    batchFetchStatus.value = "error"
-    batchFetchMessage.value = res.message
-    window?.$message?.error(res.message)
+  if (url.includes("kuaishou.com")) {
+    const userId = extractKuaishouUserId(url)
+    if (!userId) {
+      window?.$message?.error(t("index.kuaishou_invalid_url"))
+      return
+    }
+    batchFetching.value = true
+    batchFetchMessage.value = ""
+    batchFetchStatus.value = "fetching"
+    const res = await appApi.kuaishouFetchList({userId})
+    if (res.code === 0) {
+      batchFetching.value = false
+      batchFetchStatus.value = "error"
+      batchFetchMessage.value = res.message
+      window?.$message?.error(res.message)
+    }
+  } else if (url.includes("xiaohongshu.com") || url.includes("xhslink.com")) {
+    window?.$message?.info(t("index.xiaohongshu_passive_tip"))
+  } else {
+    window?.$message?.error(t("index.batch_fetch_invalid_url"))
   }
 }
 

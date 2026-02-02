@@ -23,10 +23,12 @@ type Proxy struct {
 
 var pluginRegistry = make(map[string]shared.Plugin)
 var kuaishouPlugin = &plugins.KuaishouPlugin{}
+var xiaohongshuPlugin = &plugins.XiaohongshuPlugin{}
 
 func init() {
 	ps := []shared.Plugin{
 		kuaishouPlugin,
+		xiaohongshuPlugin,
 		&plugins.QqPlugin{},
 		&plugins.DefaultPlugin{},
 	}
