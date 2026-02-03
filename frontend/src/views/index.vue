@@ -997,6 +997,9 @@ const batchExportExcel = () => {
     .map(item => ({
       Description: item.Description || "",
       likeCount: item.OtherData?.likeCount || "",
+      favCount: item.OtherData?.favCount || "",
+      forwardCount: item.OtherData?.forwardCount || "",
+      commentCount: item.OtherData?.commentCount || "",
       viewCount: item.OtherData?.viewCount || "",
       Url: item.Url || ""
     }))

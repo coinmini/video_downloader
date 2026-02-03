@@ -449,10 +449,13 @@ func (h *HttpServer) batchExport(w http.ResponseWriter, r *http.Request) {
 }
 
 type exportDataItem struct {
-	Description string `json:"Description"`
-	LikeCount   string `json:"likeCount"`
-	ViewCount   string `json:"viewCount"`
-	Url         string `json:"Url"`
+	Description  string `json:"Description"`
+	LikeCount    string `json:"likeCount"`
+	FavCount     string `json:"favCount"`
+	ForwardCount string `json:"forwardCount"`
+	CommentCount string `json:"commentCount"`
+	ViewCount    string `json:"viewCount"`
+	Url          string `json:"Url"`
 }
 
 func (h *HttpServer) batchExportExcel(w http.ResponseWriter, r *http.Request) {
@@ -476,8 +479,8 @@ func (h *HttpServer) batchExportExcel(w http.ResponseWriter, r *http.Request) {
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
 	})
 
-	headers := []string{"序号", "描述", "点赞", "播放量", "链接"}
-	colWidths := []float64{8, 60, 12, 12, 80}
+	headers := []string{"序号", "描述", "收藏", "点赞", "转发", "评论", "播放量", "链接"}
+	colWidths := []float64{8, 60, 10, 10, 10, 10, 12, 80}
 	for i, header := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue(sheet, cell, header)
@@ -490,17 +493,12 @@ func (h *HttpServer) batchExportExcel(w http.ResponseWriter, r *http.Request) {
 		row := idx + 2
 		f.SetCellValue(sheet, cellName(1, row), idx+1)
 		f.SetCellValue(sheet, cellName(2, row), item.Description)
-		if v, err := strconv.ParseInt(item.LikeCount, 10, 64); err == nil {
-			f.SetCellValue(sheet, cellName(3, row), v)
-		} else {
-			f.SetCellValue(sheet, cellName(3, row), item.LikeCount)
-		}
-		if v, err := strconv.ParseInt(item.ViewCount, 10, 64); err == nil {
-			f.SetCellValue(sheet, cellName(4, row), v)
-		} else {
-			f.SetCellValue(sheet, cellName(4, row), item.ViewCount)
-		}
-		f.SetCellValue(sheet, cellName(5, row), item.Url)
+		setIntOrStr(f, sheet, 3, row, item.LikeCount)
+		setIntOrStr(f, sheet, 4, row, item.FavCount)
+		setIntOrStr(f, sheet, 5, row, item.ForwardCount)
+		setIntOrStr(f, sheet, 6, row, item.CommentCount)
+		setIntOrStr(f, sheet, 7, row, item.ViewCount)
+		f.SetCellValue(sheet, cellName(8, row), item.Url)
 	}
 
 	fileName := filepath.Join(globalConfig.SaveDirectory, "res-downloader-"+shared.GetCurrentDateTimeFormatted()+".xlsx")
@@ -518,6 +516,14 @@ func (h *HttpServer) batchExportExcel(w http.ResponseWriter, r *http.Request) {
 func cellName(col, row int) string {
 	name, _ := excelize.CoordinatesToCellName(col, row)
 	return name
+}
+
+func setIntOrStr(f *excelize.File, sheet string, col, row int, val string) {
+	if v, err := strconv.ParseInt(val, 10, 64); err == nil {
+		f.SetCellValue(sheet, cellName(col, row), v)
+	} else {
+		f.SetCellValue(sheet, cellName(col, row), val)
+	}
 }
 
 func (h *HttpServer) bilibiliFetchList(w http.ResponseWriter, r *http.Request) {
