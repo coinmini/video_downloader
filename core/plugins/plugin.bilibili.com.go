@@ -570,12 +570,22 @@ func (p *BilibiliPlugin) fetchPage(ctx context.Context, mid string, pn, ps int, 
 	return result.Data.List.Vlist, result.Data.Page.Count, nil
 }
 
-// fetchVideoCid gets the cid for a video via /x/web-interface/view
-func (p *BilibiliPlugin) fetchVideoCid(bvid, cookies string) (int64, error) {
+// videoViewInfo holds cid and stat info from /x/web-interface/view
+type videoViewInfo struct {
+	Cid      int64
+	Like     int64
+	Coin     int64
+	Favorite int64
+	Share    int64
+	Reply    int64
+}
+
+// fetchVideoViewInfo gets cid and engagement stats via /x/web-interface/view
+func (p *BilibiliPlugin) fetchVideoViewInfo(bvid, cookies string) (*videoViewInfo, error) {
 	apiUrl := fmt.Sprintf("https://api.bilibili.com/x/web-interface/view?bvid=%s", bvid)
 	req, err := http.NewRequest("GET", apiUrl, nil)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	req.Header.Set("Cookie", cookies)
@@ -588,28 +598,42 @@ func (p *BilibiliPlugin) fetchVideoCid(bvid, cookies string) (int64, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	var result struct {
 		Code int `json:"code"`
 		Data struct {
-			Cid int64 `json:"cid"`
+			Cid  int64 `json:"cid"`
+			Stat struct {
+				Like     int64 `json:"like"`
+				Coin     int64 `json:"coin"`
+				Favorite int64 `json:"favorite"`
+				Share    int64 `json:"share"`
+				Reply    int64 `json:"reply"`
+			} `json:"stat"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return 0, err
+		return nil, err
 	}
 	if result.Code != 0 || result.Data.Cid == 0 {
-		return 0, fmt.Errorf("failed to get cid, code=%d", result.Code)
+		return nil, fmt.Errorf("failed to get cid, code=%d", result.Code)
 	}
-	return result.Data.Cid, nil
+	return &videoViewInfo{
+		Cid:      result.Data.Cid,
+		Like:     result.Data.Stat.Like,
+		Coin:     result.Data.Stat.Coin,
+		Favorite: result.Data.Stat.Favorite,
+		Share:    result.Data.Stat.Share,
+		Reply:    result.Data.Stat.Reply,
+	}, nil
 }
 
 // fetchPlayUrl gets the actual video stream URL via /x/player/playurl
@@ -680,9 +704,9 @@ func (p *BilibiliPlugin) emitVideo(video map[string]interface{}, cookies string)
 	videoUrl := fmt.Sprintf("https://www.bilibili.com/video/%s", bvid)
 	var fileSize int64
 
-	cid, err := p.fetchVideoCid(bvid, cookies)
+	viewInfo, err := p.fetchVideoViewInfo(bvid, cookies)
 	if err == nil {
-		playUrl, size, err2 := p.fetchPlayUrl(bvid, cid, cookies)
+		playUrl, size, err2 := p.fetchPlayUrl(bvid, viewInfo.Cid, cookies)
 		if err2 == nil && playUrl != "" {
 			videoUrl = playUrl
 			fileSize = size
@@ -712,7 +736,7 @@ func (p *BilibiliPlugin) emitVideo(video map[string]interface{}, cookies string)
 		otherData["headers"] = string(headersJson)
 	}
 
-	// Extract play count
+	// Extract play count from list API
 	if play, ok := video["play"]; ok && play != nil {
 		switch v := play.(type) {
 		case float64:
@@ -722,14 +746,24 @@ func (p *BilibiliPlugin) emitVideo(video map[string]interface{}, cookies string)
 		}
 	}
 
-	// Extract comment count as likeCount proxy (bilibili list API doesn't return likes)
+	// Extract comment count from list API
 	if comment, ok := video["comment"]; ok && comment != nil {
 		switch v := comment.(type) {
 		case float64:
-			otherData["likeCount"] = fmt.Sprintf("%.0f", v)
+			otherData["commentCount"] = fmt.Sprintf("%.0f", v)
 		case string:
-			otherData["likeCount"] = v
+			otherData["commentCount"] = v
 		}
+	}
+
+	// Use real engagement stats from view API
+	if viewInfo != nil {
+		otherData["likeCount"] = fmt.Sprintf("%d", viewInfo.Like)
+		otherData["coinCount"] = fmt.Sprintf("%d", viewInfo.Coin)
+		otherData["favCount"] = fmt.Sprintf("%d", viewInfo.Favorite)
+		otherData["forwardCount"] = fmt.Sprintf("%d", viewInfo.Share)
+		// Override comment count with view API data (more accurate)
+		otherData["commentCount"] = fmt.Sprintf("%d", viewInfo.Reply)
 	}
 
 	res := shared.MediaInfo{

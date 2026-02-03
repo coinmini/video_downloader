@@ -488,6 +488,42 @@ const columns = ref<any[]>([
     }
   },
   {
+    title: computed(() => t("index.coin_count")),
+    key: "coinCount",
+    width: 70,
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.coinCount
+      return count ? count : ""
+    }
+  },
+  {
+    title: computed(() => t("index.fav_count")),
+    key: "favCount",
+    width: 70,
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.favCount
+      return count ? count : ""
+    }
+  },
+  {
+    title: computed(() => t("index.forward_count")),
+    key: "forwardCount",
+    width: 70,
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.forwardCount
+      return count ? count : ""
+    }
+  },
+  {
+    title: computed(() => t("index.comment_count")),
+    key: "commentCount",
+    width: 70,
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.commentCount
+      return count ? count : ""
+    }
+  },
+  {
     title: computed(() => t("index.view_count")),
     key: "viewCount",
     width: 80,
@@ -943,6 +979,10 @@ const batchExportExcel = () => {
     .map(item => ({
       Description: item.Description || "",
       likeCount: item.OtherData?.likeCount || "",
+      coinCount: item.OtherData?.coinCount || "",
+      favCount: item.OtherData?.favCount || "",
+      forwardCount: item.OtherData?.forwardCount || "",
+      commentCount: item.OtherData?.commentCount || "",
       viewCount: item.OtherData?.viewCount || "",
       Url: item.Url || ""
     }))
