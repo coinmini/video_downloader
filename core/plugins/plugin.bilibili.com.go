@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"res-downloader/core/shared"
@@ -19,6 +20,12 @@ import (
 	"github.com/elazarl/goproxy"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 )
+
+// jitterDuration returns a duration with ±30% random jitter
+func jitterDuration(base time.Duration) time.Duration {
+	jitter := float64(base) * 0.3
+	return base + time.Duration(rand.Float64()*2*jitter-jitter)
+}
 
 // WBI signing permutation table
 var mixinKeyEncTab = []int{
@@ -324,6 +331,13 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 		lastCookieVer := p.getCookieVer()
 		pageSize := 30
 
+		// Adaptive delay parameters
+		videoDelay := 800 * time.Millisecond  // base delay between videos (each has 2-3 API calls)
+		pageDelay := 3 * time.Second          // base delay between pages
+		const maxVideoDelay = 5 * time.Second // upper bound for video delay
+		const maxPageDelay = 15 * time.Second // upper bound for page delay
+		consecutiveSuccess := 0               // track consecutive successes for gradual speedup
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -343,6 +357,17 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 				// Check if it's a rate limit / risk control error
 				errMsg := err.Error()
 				if strings.Contains(errMsg, "-352") || strings.Contains(errMsg, "-412") || strings.Contains(errMsg, "风控") {
+					// Backoff: double both delays on rate limit
+					videoDelay = videoDelay * 2
+					if videoDelay > maxVideoDelay {
+						videoDelay = maxVideoDelay
+					}
+					pageDelay = pageDelay * 2
+					if pageDelay > maxPageDelay {
+						pageDelay = maxPageDelay
+					}
+					consecutiveSuccess = 0
+
 					p.bridge.Send("batchFetchProgress", map[string]interface{}{
 						"status":  "waiting_cookies",
 						"total":   totalFetched,
@@ -394,10 +419,12 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 						return
 					}
 
+					// Wait longer after rate limit recovery (15-20s with jitter)
+					recoveryDelay := jitterDuration(15 * time.Second)
 					p.bridge.Send("batchFetchProgress", map[string]interface{}{
 						"status":  "fetching",
 						"total":   totalFetched,
-						"message": fmt.Sprintf("检测到新Cookie，等待10秒后继续获取... 已获取 %d 个视频", totalFetched),
+						"message": fmt.Sprintf("检测到新Cookie，等待%.0f秒后继续获取... 已获取 %d 个视频", recoveryDelay.Seconds(), totalFetched),
 					})
 
 					select {
@@ -408,7 +435,7 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 							"message": fmt.Sprintf("已取消，共获取 %d 个视频", totalFetched),
 						})
 						return
-					case <-time.After(10 * time.Second):
+					case <-time.After(recoveryDelay):
 					}
 
 					// Retry the same page
@@ -422,6 +449,20 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 					"message": err.Error(),
 				})
 				return
+			}
+
+			// Page fetched successfully
+			consecutiveSuccess++
+			// Gradually reduce delays after sustained success (every 3 pages)
+			if consecutiveSuccess%3 == 0 {
+				videoDelay = videoDelay * 9 / 10 // reduce by 10%
+				if videoDelay < 600*time.Millisecond {
+					videoDelay = 600 * time.Millisecond
+				}
+				pageDelay = pageDelay * 9 / 10
+				if pageDelay < 2*time.Second {
+					pageDelay = 2 * time.Second
+				}
 			}
 
 			for i, video := range videos {
@@ -438,8 +479,7 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 					})
 				}
 
-				// Delay between each video to avoid rate limiting
-				// Each video requires 2 API calls (view + playurl), so pace them out
+				// Randomized delay between videos to avoid pattern detection
 				if i < len(videos)-1 {
 					select {
 					case <-ctx.Done():
@@ -449,7 +489,7 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 							"message": fmt.Sprintf("已取消，共获取 %d 个视频", totalFetched),
 						})
 						return
-					case <-time.After(500 * time.Millisecond):
+					case <-time.After(jitterDuration(videoDelay)):
 					}
 				}
 			}
@@ -459,7 +499,7 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 				break
 			}
 
-			// Delay between pages
+			// Randomized delay between pages
 			select {
 			case <-ctx.Done():
 				p.bridge.Send("batchFetchProgress", map[string]interface{}{
@@ -468,7 +508,7 @@ func (p *BilibiliPlugin) FetchProfileVideos(mid string) error {
 					"message": fmt.Sprintf("已取消，共获取 %d 个视频", totalFetched),
 				})
 				return
-			case <-time.After(2 * time.Second):
+			case <-time.After(jitterDuration(pageDelay)):
 			}
 		}
 
@@ -706,6 +746,8 @@ func (p *BilibiliPlugin) emitVideo(video map[string]interface{}, cookies string)
 
 	viewInfo, err := p.fetchVideoViewInfo(bvid, cookies)
 	if err == nil {
+		// Short randomized delay between view and playurl API calls
+		time.Sleep(jitterDuration(200 * time.Millisecond))
 		playUrl, size, err2 := p.fetchPlayUrl(bvid, viewInfo.Cid, cookies)
 		if err2 == nil && playUrl != "" {
 			videoUrl = playUrl
