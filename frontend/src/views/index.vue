@@ -474,7 +474,7 @@ const columns = ref<any[]>([
     }
   },
   {
-    title: computed(() => t("index.like_count")),
+    title: computed(() => t("index.fav_count")),
     key: "likeCount",
     width: 70,
     sorter: (row1: appType.MediaInfo, row2: appType.MediaInfo) => {
@@ -488,7 +488,7 @@ const columns = ref<any[]>([
     }
   },
   {
-    title: computed(() => t("index.fav_count")),
+    title: computed(() => t("index.like_count")),
     key: "favCount",
     width: 70,
     sorter: (row1: appType.MediaInfo, row2: appType.MediaInfo) => {
