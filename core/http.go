@@ -519,3 +519,42 @@ func cellName(col, row int) string {
 	name, _ := excelize.CoordinatesToCellName(col, row)
 	return name
 }
+
+func (h *HttpServer) bilibiliFetchList(w http.ResponseWriter, r *http.Request) {
+	var data struct {
+		Mid string `json:"mid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		h.error(w, err.Error())
+		return
+	}
+	if data.Mid == "" {
+		h.error(w, "mid is required")
+		return
+	}
+	if !bilibiliPlugin.HasCookies() {
+		h.error(w, "未检测到Cookie，请先开启代理并浏览B站页面")
+		return
+	}
+	if err := bilibiliPlugin.FetchProfileVideos(data.Mid); err != nil {
+		h.error(w, err.Error())
+		return
+	}
+	h.success(w, respData{
+		"message": "开始获取",
+	})
+}
+
+func (h *HttpServer) bilibiliCancelFetch(w http.ResponseWriter, r *http.Request) {
+	bilibiliPlugin.CancelFetch()
+	h.success(w, respData{
+		"message": "已取消",
+	})
+}
+
+func (h *HttpServer) bilibiliFetchStatus(w http.ResponseWriter, r *http.Request) {
+	h.success(w, respData{
+		"isFetching": bilibiliPlugin.IsFetching(),
+		"hasCookies": bilibiliPlugin.HasCookies(),
+	})
+}

@@ -74,6 +74,12 @@ func HandleApi(w http.ResponseWriter, r *http.Request) bool {
 			httpServerOnce.kuaishouCancelFetch(w, r)
 		case "/api/kuaishou-fetch-status":
 			httpServerOnce.kuaishouFetchStatus(w, r)
+		case "/api/bilibili-fetch-list":
+			httpServerOnce.bilibiliFetchList(w, r)
+		case "/api/bilibili-cancel-fetch":
+			httpServerOnce.bilibiliCancelFetch(w, r)
+		case "/api/bilibili-fetch-status":
+			httpServerOnce.bilibiliFetchStatus(w, r)
 		}
 		return true
 	}

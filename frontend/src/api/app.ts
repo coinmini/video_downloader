@@ -146,4 +146,23 @@ export default {
             method: 'post'
         })
     },
+    bilibiliFetchList(data: { mid: string }) {
+        return request({
+            url: 'api/bilibili-fetch-list',
+            method: 'post',
+            data: data
+        })
+    },
+    bilibiliCancelFetch() {
+        return request({
+            url: 'api/bilibili-cancel-fetch',
+            method: 'post'
+        })
+    },
+    bilibiliFetchStatus() {
+        return request({
+            url: 'api/bilibili-fetch-status',
+            method: 'post'
+        })
+    },
 }

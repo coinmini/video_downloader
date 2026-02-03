@@ -1098,16 +1098,37 @@ const extractKuaishouUserId = (url: string): string => {
   return ""
 }
 
+const extractBilibiliMid = (url: string): string => {
+  // Match: space.bilibili.com/123456 or space.bilibili.com/123456/video
+  const match = url.match(/space\.bilibili\.com\/(\d+)/)
+  if (match) return match[1]
+  // Accept raw numeric mid
+  if (/^\d+$/.test(url.trim())) return url.trim()
+  return ""
+}
+
+// Track which platform is currently fetching for cancel
+const batchFetchPlatform = ref("")
+
 const openBatchFetch = async () => {
   showBatchFetch.value = true
   batchFetchMessage.value = ""
   batchFetchCookieWarning.value = ""
 
-  const ksRes = await appApi.kuaishouFetchStatus()
+  // Check if any platform is already fetching
+  const [ksRes, biliRes] = await Promise.all([
+    appApi.kuaishouFetchStatus(),
+    appApi.bilibiliFetchStatus()
+  ])
   if (ksRes.code === 1 && ksRes.data.isFetching) {
     batchFetching.value = true
+    batchFetchPlatform.value = "kuaishou"
+  } else if (biliRes.code === 1 && biliRes.data.isFetching) {
+    batchFetching.value = true
+    batchFetchPlatform.value = "bilibili"
   } else {
     batchFetching.value = false
+    batchFetchPlatform.value = ""
   }
 }
 
@@ -1126,7 +1147,25 @@ const startBatchFetch = async () => {
     batchFetching.value = true
     batchFetchMessage.value = ""
     batchFetchStatus.value = "fetching"
+    batchFetchPlatform.value = "kuaishou"
     const res = await appApi.kuaishouFetchList({userId})
+    if (res.code === 0) {
+      batchFetching.value = false
+      batchFetchStatus.value = "error"
+      batchFetchMessage.value = res.message
+      window?.$message?.error(res.message)
+    }
+  } else if (url.includes("bilibili.com") || url.includes("b23.tv")) {
+    const mid = extractBilibiliMid(url)
+    if (!mid) {
+      window?.$message?.error(t("index.bilibili_invalid_url"))
+      return
+    }
+    batchFetching.value = true
+    batchFetchMessage.value = ""
+    batchFetchStatus.value = "fetching"
+    batchFetchPlatform.value = "bilibili"
+    const res = await appApi.bilibiliFetchList({mid})
     if (res.code === 0) {
       batchFetching.value = false
       batchFetchStatus.value = "error"
@@ -1139,9 +1178,14 @@ const startBatchFetch = async () => {
 }
 
 const cancelBatchFetch = async () => {
-  await appApi.kuaishouCancelFetch()
+  if (batchFetchPlatform.value === "bilibili") {
+    await appApi.bilibiliCancelFetch()
+  } else {
+    await appApi.kuaishouCancelFetch()
+  }
   batchFetching.value = false
   batchFetchStatus.value = "cancelled"
+  batchFetchPlatform.value = ""
 }
 
 const handleImport = (content: string) => {
