@@ -261,6 +261,17 @@ func (p *XiaohongshuPlugin) emitFeedVideo(noteCard map[string]interface{}, noteI
 		otherData["likeCount"] = likeCount
 	}
 
+	// Add download headers to avoid CDN 418 errors
+	cookies := p.getCookies()
+	downloadHeaders := map[string][]string{
+		"Referer":    {"https://www.xiaohongshu.com/"},
+		"Origin":     {"https://www.xiaohongshu.com"},
+		"Cookie":     {cookies},
+		"User-Agent": {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+	}
+	headersJSON, _ := json.Marshal(downloadHeaders)
+	otherData["headers"] = string(headersJSON)
+
 	res := shared.MediaInfo{
 		Id:          id,
 		Url:         videoUrl,
@@ -599,6 +610,16 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 	noteUrlSign := shared.Md5(noteUrl)
 	p.bridge.MarkMedia(noteUrlSign)
 	p.pendingVideos.Delete(noteId)
+
+	// Add download headers to avoid CDN 418 errors
+	downloadHeaders := map[string][]string{
+		"Referer":    {"https://www.xiaohongshu.com/"},
+		"Origin":     {"https://www.xiaohongshu.com"},
+		"Cookie":     {cookies},
+		"User-Agent": {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+	}
+	headersJSON, _ := json.Marshal(downloadHeaders)
+	otherData["headers"] = string(headersJSON)
 
 	urlSign := shared.Md5(videoUrl)
 	id, err := gonanoid.New()

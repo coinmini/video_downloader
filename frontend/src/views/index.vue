@@ -842,7 +842,7 @@ const batchDown = async () => {
   }
 
   data.value.forEach((item, index) => {
-    if (checkedRowKeysValue.value.includes(item.Id) && item.Classify !== 'live' && item.Classify !== 'm3u8') {
+    if (checkedRowKeysValue.value.includes(item.Id) && item.Classify !== 'live' && item.Classify !== 'm3u8' && item.Status !== 'done') {
       download(item, index)
     }
   })
