@@ -16,6 +16,7 @@ import (
 
 var qqMediaRegex = regexp.MustCompile(`get\s*media\(\)\{`)
 var qqCommentRegex = regexp.MustCompile(`async\s*finderGetCommentDetail\((\w+)\)\s*\{return(.*?)\s*}\s*async`)
+var qqUserPageRegex = regexp.MustCompile(`async\s*finderUserPage\((\w+)\)\s*\{return(.*?)\s*}\s*async`)
 
 type QqPlugin struct {
 	bridge *shared.Bridge
@@ -60,7 +61,7 @@ func (p *QqPlugin) OnResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.
 	}
 
 	if strings.HasSuffix(host, "channels.weixin.qq.com") &&
-		(strings.Contains(Path, "/web/pages/feed") || strings.Contains(Path, "/web/pages/home")) {
+		(strings.Contains(Path, "/web/pages/feed") || strings.Contains(Path, "/web/pages/home") || strings.Contains(Path, "/web/pages/profile")) {
 		return p.replaceWxJsContent(resp, ".js\"", ".js?v="+p.v()+"\"")
 	}
 
@@ -100,6 +101,25 @@ func (p *QqPlugin) OnResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.
 									  method: "POST",
 									  mode: "no-cors",
 									  body: JSON.stringify(res.data.object.objectDesc),
+									});
+								}
+								return res;
+							}async
+			`)
+
+			newBody = qqUserPageRegex.
+				ReplaceAllString(newBody, `
+							async finderUserPage($1) {
+								var res = await$2;
+								if (res?.data?.object) {
+									res.data.object.forEach(function(item) {
+										if (item?.objectDesc) {
+											fetch("https://wxapp.tc.qq.com/res-downloader/wechat?type=1", {
+											  method: "POST",
+											  mode: "no-cors",
+											  body: JSON.stringify(item.objectDesc),
+											});
+										}
 									});
 								}
 								return res;
