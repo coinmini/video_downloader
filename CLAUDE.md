@@ -100,3 +100,41 @@ Go plugin → bridge.Send(type, data)
 - 事件类型：`newResources`（新资源）、`batchFetchProgress`（批量获取进度）
 - 前端使用 Vue 3 Composition API + `<script setup>` 语法
 - 资源去重：`bridge.MediaIsMarked(shared.Md5(url))` 检查 → `bridge.MarkMedia()` 标记
+
+
+## Python 环境
+
+本项目使用 conda 虚拟环境，Python 解释器路径：
+
+```
+/Users/bolin/miniconda3/envs/develop/bin/python
+```
+
+运行 Python 脚本时请使用：
+```bash
+/Users/bolin/miniconda3/envs/develop/bin/python script.py
+```
+
+## Node 环境
+
+Node.js 路径：
+
+```
+/Applications/DevEco-Studio.app/Contents/tools/node/bin/node
+```
+
+运行 npm/npx 时请使用：
+```bash
+/Applications/DevEco-Studio.app/Contents/tools/node/bin/npm
+/Applications/DevEco-Studio.app/Contents/tools/node/bin/npx
+```
+
+**注意**：直接使用 npx 可能会报 `env: node: No such file or directory` 错误。
+请改用 node 直接执行本地脚本的方式：
+```bash
+# TypeScript 类型检查
+cd frontend && /Applications/DevEco-Studio.app/Contents/tools/node/bin/node ./node_modules/.bin/tsc --noEmit
+
+# 运行 Next.js 开发服务器
+cd frontend && /Applications/DevEco-Studio.app/Contents/tools/node/bin/node ./node_modules/.bin/next dev
+```

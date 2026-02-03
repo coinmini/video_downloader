@@ -12,11 +12,13 @@ import (
 	"res-downloader/core/shared"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var qqMediaRegex = regexp.MustCompile(`get\s*media\(\)\{`)
 var qqCommentRegex = regexp.MustCompile(`async\s*finderGetCommentDetail\((\w+)\)\s*\{return(.*?)\s*}\s*async`)
 var qqUserPageRegex = regexp.MustCompile(`async\s*finderUserPage\((\w+)\)\s*\{return(.*?)\s*}\s*async`)
+var qqStartTime = fmt.Sprintf("%d", time.Now().Unix())
 
 type QqPlugin struct {
 	bridge *shared.Bridge
@@ -114,10 +116,15 @@ func (p *QqPlugin) OnResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.
 								if (res?.data?.object) {
 									res.data.object.forEach(function(item) {
 										if (item?.objectDesc) {
+											var payload = Object.assign({}, item.objectDesc);
+											if (item.likeCount !== undefined) payload._likeCount = item.likeCount;
+											if (item.favCount !== undefined) payload._favCount = item.favCount;
+											if (item.forwardCount !== undefined) payload._forwardCount = item.forwardCount;
+											if (item.commentCount !== undefined) payload._commentCount = item.commentCount;
 											fetch("https://wxapp.tc.qq.com/res-downloader/wechat?type=1", {
 											  method: "POST",
 											  mode: "no-cors",
-											  body: JSON.stringify(item.objectDesc),
+											  body: JSON.stringify(payload),
 											});
 										}
 									});
@@ -173,6 +180,7 @@ func (p *QqPlugin) handleMedia(body []byte) {
 
 	urlSign := shared.Md5(rawUrl)
 	if p.bridge.MediaIsMarked(urlSign) {
+		p.tryUpdateEngagement(urlSign, result)
 		return
 	}
 
@@ -240,6 +248,20 @@ func (p *QqPlugin) handleMedia(body []byte) {
 		res.Description = desc
 	}
 
+	// Extract engagement data injected by finderUserPage hook
+	if likeCount, ok := result["_likeCount"].(float64); ok {
+		res.OtherData["likeCount"] = strconv.FormatFloat(likeCount, 'f', 0, 64)
+	}
+	if favCount, ok := result["_favCount"].(float64); ok {
+		res.OtherData["favCount"] = strconv.FormatFloat(favCount, 'f', 0, 64)
+	}
+	if forwardCount, ok := result["_forwardCount"].(float64); ok {
+		res.OtherData["forwardCount"] = strconv.FormatFloat(forwardCount, 'f', 0, 64)
+	}
+	if commentCount, ok := result["_commentCount"].(float64); ok {
+		res.OtherData["commentCount"] = strconv.FormatFloat(commentCount, 'f', 0, 64)
+	}
+
 	if spec, ok := firstMedia["spec"].([]interface{}); ok {
 		var fileFormats []string
 		for _, item := range spec {
@@ -257,6 +279,28 @@ func (p *QqPlugin) handleMedia(body []byte) {
 	go func(res shared.MediaInfo) {
 		p.bridge.Send("newResources", res)
 	}(res)
+}
+
+func (p *QqPlugin) tryUpdateEngagement(urlSign string, result map[string]interface{}) {
+	update := map[string]string{}
+	if likeCount, ok := result["_likeCount"].(float64); ok {
+		update["likeCount"] = strconv.FormatFloat(likeCount, 'f', 0, 64)
+	}
+	if favCount, ok := result["_favCount"].(float64); ok {
+		update["favCount"] = strconv.FormatFloat(favCount, 'f', 0, 64)
+	}
+	if forwardCount, ok := result["_forwardCount"].(float64); ok {
+		update["forwardCount"] = strconv.FormatFloat(forwardCount, 'f', 0, 64)
+	}
+	if commentCount, ok := result["_commentCount"].(float64); ok {
+		update["commentCount"] = strconv.FormatFloat(commentCount, 'f', 0, 64)
+	}
+	if len(update) > 0 {
+		p.bridge.Send("updateResourceMeta", map[string]interface{}{
+			"UrlSign":   urlSign,
+			"OtherData": update,
+		})
+	}
 }
 
 func (p *QqPlugin) buildEmptyResponse(r *http.Request) *http.Response {
@@ -288,5 +332,5 @@ func (p *QqPlugin) replaceWxJsContent(resp *http.Response, old, new string) *htt
 }
 
 func (p *QqPlugin) v() string {
-	return p.bridge.GetVersion()
+	return p.bridge.GetVersion() + "." + qqStartTime
 }

@@ -488,6 +488,48 @@ const columns = ref<any[]>([
     }
   },
   {
+    title: computed(() => t("index.fav_count")),
+    key: "favCount",
+    width: 70,
+    sorter: (row1: appType.MediaInfo, row2: appType.MediaInfo) => {
+      const a = parseInt(row1.OtherData?.favCount || "0") || 0
+      const b = parseInt(row2.OtherData?.favCount || "0") || 0
+      return a - b
+    },
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.favCount
+      return count ? count : ""
+    }
+  },
+  {
+    title: computed(() => t("index.forward_count")),
+    key: "forwardCount",
+    width: 70,
+    sorter: (row1: appType.MediaInfo, row2: appType.MediaInfo) => {
+      const a = parseInt(row1.OtherData?.forwardCount || "0") || 0
+      const b = parseInt(row2.OtherData?.forwardCount || "0") || 0
+      return a - b
+    },
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.forwardCount
+      return count ? count : ""
+    }
+  },
+  {
+    title: computed(() => t("index.comment_count")),
+    key: "commentCount",
+    width: 70,
+    sorter: (row1: appType.MediaInfo, row2: appType.MediaInfo) => {
+      const a = parseInt(row1.OtherData?.commentCount || "0") || 0
+      const b = parseInt(row2.OtherData?.commentCount || "0") || 0
+      return a - b
+    },
+    render(row: appType.MediaInfo) {
+      const count = row.OtherData?.commentCount
+      return count ? count : ""
+    }
+  },
+  {
     title: computed(() => t("index.view_count")),
     key: "viewCount",
     width: 80,
@@ -679,6 +721,18 @@ onMounted(() => {
       batchFetchStatus.value = res.status
       if (res.status === "done" || res.status === "error" || res.status === "cancelled") {
         batchFetching.value = false
+      }
+    }
+  })
+
+  eventStore.addHandle({
+    type: "updateResourceMeta",
+    event: (res: { UrlSign: string, OtherData: Record<string, string> }) => {
+      const item = data.value.find(i => i.UrlSign === res.UrlSign)
+      if (item && res.OtherData) {
+        if (!item.OtherData) item.OtherData = {}
+        Object.assign(item.OtherData, res.OtherData)
+        cacheData()
       }
     }
   })
