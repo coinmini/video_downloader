@@ -665,8 +665,16 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 	count := atomic.AddInt64(&p.fetchCount, 1)
 	log.Printf("[xiaohongshu] fetched video URL for note %s (%d): %s", noteId, count, displayTitle)
 
-	// Proactive cooldown: every 300 successful fetches, pause 1 hour to avoid rate limiting
-	if count%200 == 0 {
+	// Proactive cooldown to avoid rate limiting
+	if count%1000 == 0 {
+		// Every 1000 fetches: long cooldown (2 hours)
+		p.rateLimitMu.Lock()
+		p.rateLimitedUntil = time.Now().Add(2 * time.Hour)
+		p.rateLimitMu.Unlock()
+		log.Printf("[xiaohongshu] 已抓取 %d 条视频，强制暂停2小时，恢复时间: %s",
+			count, p.rateLimitedUntil.Format("15:04:05"))
+	} else if count%200 == 0 {
+		// Every 200 fetches: short cooldown (1 hour)
 		p.rateLimitMu.Lock()
 		p.rateLimitedUntil = time.Now().Add(1 * time.Hour)
 		p.rateLimitMu.Unlock()
@@ -852,8 +860,14 @@ func (p *XiaohongshuPlugin) retryFailedVideos() {
 			count := atomic.AddInt64(&p.fetchCount, 1)
 			log.Printf("[xiaohongshu] retry succeeded for %s (%d): %s", v.noteId, count, v.displayTitle)
 
-			// Proactive cooldown: every 300 successful fetches, pause 1 hour
-			if count%200 == 0 {
+			// Proactive cooldown to avoid rate limiting
+			if count%1000 == 0 {
+				p.rateLimitMu.Lock()
+				p.rateLimitedUntil = time.Now().Add(2 * time.Hour)
+				p.rateLimitMu.Unlock()
+				log.Printf("[xiaohongshu] 已抓取 %d 条视频，强制暂停2小时，恢复时间: %s",
+					count, p.rateLimitedUntil.Format("15:04:05"))
+			} else if count%200 == 0 {
 				p.rateLimitMu.Lock()
 				p.rateLimitedUntil = time.Now().Add(1 * time.Hour)
 				p.rateLimitMu.Unlock()
