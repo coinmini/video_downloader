@@ -44,6 +44,7 @@ type XiaohongshuPlugin struct {
 	// Rate limiting
 	rateLimitedUntil time.Time  // when rate limited, don't fetch until this time
 	rateLimitMu      sync.Mutex // protects rateLimitedUntil
+	fetchCount       int64      // atomic counter of successful feed API fetches (resets after cooldown)
 
 	// Failed video retry queue
 	failedVideos []failedVideoInfo
@@ -660,7 +661,18 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 	}
 	p.bridge.MarkMedia(urlSign)
 	p.bridge.Send("newResources", res)
-	log.Printf("[xiaohongshu] fetched video URL for note %s: %s", noteId, displayTitle)
+
+	count := atomic.AddInt64(&p.fetchCount, 1)
+	log.Printf("[xiaohongshu] fetched video URL for note %s (%d): %s", noteId, count, displayTitle)
+
+	// Proactive cooldown: every 300 successful fetches, pause 1 hour to avoid rate limiting
+	if count%300 == 0 {
+		p.rateLimitMu.Lock()
+		p.rateLimitedUntil = time.Now().Add(1 * time.Hour)
+		p.rateLimitMu.Unlock()
+		log.Printf("[xiaohongshu] 已抓取 %d 条视频，主动暂停1小时避免限流，恢复时间: %s",
+			count, p.rateLimitedUntil.Format("15:04:05"))
+	}
 }
 
 // fetchVideoFromFeedAPI calls the XHS feed API directly with signed headers
@@ -836,7 +848,18 @@ func (p *XiaohongshuPlugin) retryFailedVideos() {
 			}
 			p.bridge.MarkMedia(urlSign)
 			p.bridge.Send("newResources", res)
-			log.Printf("[xiaohongshu] retry succeeded for %s: %s", v.noteId, v.displayTitle)
+
+			count := atomic.AddInt64(&p.fetchCount, 1)
+			log.Printf("[xiaohongshu] retry succeeded for %s (%d): %s", v.noteId, count, v.displayTitle)
+
+			// Proactive cooldown: every 300 successful fetches, pause 1 hour
+			if count%300 == 0 {
+				p.rateLimitMu.Lock()
+				p.rateLimitedUntil = time.Now().Add(1 * time.Hour)
+				p.rateLimitMu.Unlock()
+				log.Printf("[xiaohongshu] 已抓取 %d 条视频，主动暂停1小时避免限流，恢复时间: %s",
+					count, p.rateLimitedUntil.Format("15:04:05"))
+			}
 		} else {
 			// Retry failed: emit fallback link
 			p.emitFallbackVideo(v)
