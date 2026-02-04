@@ -38,8 +38,8 @@ type XiaohongshuPlugin struct {
 	totalMu       sync.Mutex
 	fetchSem      chan struct{} // limits concurrent feed API requests
 	fetchSemOnce  sync.Once
-	pendingVideos sync.Map  // noteId -> true, tracks in-flight video fetches
-	pendingCount  int64     // atomic counter of in-flight video fetches
+	pendingVideos sync.Map // noteId -> true, tracks in-flight video fetches
+	pendingCount  int64    // atomic counter of in-flight video fetches
 
 	// Rate limiting
 	rateLimitedUntil time.Time  // when rate limited, don't fetch until this time
@@ -666,7 +666,7 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 	log.Printf("[xiaohongshu] fetched video URL for note %s (%d): %s", noteId, count, displayTitle)
 
 	// Proactive cooldown: every 300 successful fetches, pause 1 hour to avoid rate limiting
-	if count%300 == 0 {
+	if count%200 == 0 {
 		p.rateLimitMu.Lock()
 		p.rateLimitedUntil = time.Now().Add(1 * time.Hour)
 		p.rateLimitMu.Unlock()
@@ -853,7 +853,7 @@ func (p *XiaohongshuPlugin) retryFailedVideos() {
 			log.Printf("[xiaohongshu] retry succeeded for %s (%d): %s", v.noteId, count, v.displayTitle)
 
 			// Proactive cooldown: every 300 successful fetches, pause 1 hour
-			if count%300 == 0 {
+			if count%200 == 0 {
 				p.rateLimitMu.Lock()
 				p.rateLimitedUntil = time.Now().Add(1 * time.Hour)
 				p.rateLimitMu.Unlock()
