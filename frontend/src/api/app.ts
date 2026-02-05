@@ -79,6 +79,13 @@ export default {
             }
         })
     },
+    restoreMediaMarks(data: { signs: string[] }) {
+        return request({
+            url: 'api/restore-media-marks',
+            method: 'post',
+            data: data
+        })
+    },
     clear() {
         return request({
             url: 'api/clear',

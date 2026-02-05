@@ -319,6 +319,22 @@ func (h *HttpServer) setType(w http.ResponseWriter, r *http.Request) {
 	h.success(w)
 }
 
+func (h *HttpServer) restoreMediaMarks(w http.ResponseWriter, r *http.Request) {
+	var data struct {
+		Signs []string `json:"signs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		h.error(w, err.Error())
+		return
+	}
+	for _, sign := range data.Signs {
+		resourceOnce.markMedia(sign)
+	}
+	h.success(w, respData{
+		"count": len(data.Signs),
+	})
+}
+
 func (h *HttpServer) clear(w http.ResponseWriter, r *http.Request) {
 	resourceOnce.clear()
 	h.success(w)

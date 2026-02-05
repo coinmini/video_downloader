@@ -169,6 +169,8 @@ func (a *App) UnsetSystemProxy() error {
 	if !a.IsProxy {
 		return nil
 	}
+	// Stop any in-flight XHS video fetching goroutines
+	xiaohongshuPlugin.StopFetching()
 	err := systemOnce.unsetProxy()
 	if err == nil {
 		a.IsProxy = false

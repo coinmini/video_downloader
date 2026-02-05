@@ -607,6 +607,17 @@ onMounted(() => {
     if (cacheChanged) {
       cacheData()
     }
+
+    // 将已有资源的 UrlSign 发送给后端，恢复 mediaMark，避免重启后重复调用 API
+    const signs: string[] = []
+    for (const item of data.value) {
+      if (item.UrlSign) signs.push(item.UrlSign)
+      // 视频笔记还有 noteUrlSign（基于 noteUrl 的 MD5），也需要恢复
+      if (item.OtherData?.noteUrlSign) signs.push(item.OtherData.noteUrlSign)
+    }
+    if (signs.length > 0) {
+      appApi.restoreMediaMarks({ signs })
+    }
   }
 
   const choiceCache = localStorage.getItem("remember-clear-choice")
@@ -627,6 +638,10 @@ onMounted(() => {
   eventStore.addHandle({
     type: "newResources",
     event: (res: appType.MediaInfo) => {
+      // 根据 UrlSign 去重，避免重启后重复添加相同资源
+      if (res.UrlSign && data.value.some(item => item.UrlSign === res.UrlSign)) {
+        return
+      }
       if (store.globalConfig.InsertTail) {
         data.value.push(res)
       } else {

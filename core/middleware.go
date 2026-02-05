@@ -52,6 +52,8 @@ func HandleApi(w http.ResponseWriter, r *http.Request) bool {
 			httpServerOnce.getConfig(w, r)
 		case "/api/set-type":
 			httpServerOnce.setType(w, r)
+		case "/api/restore-media-marks":
+			httpServerOnce.restoreMediaMarks(w, r)
 		case "/api/clear":
 			httpServerOnce.clear(w, r)
 		case "/api/delete":

@@ -41,6 +41,11 @@ type XiaohongshuPlugin struct {
 	pendingVideos sync.Map // noteId -> true, tracks in-flight video fetches
 	pendingCount  int64    // atomic counter of in-flight video fetches
 
+	// Cancellation: closed to signal all fetch goroutines to stop
+	stopChan chan struct{}
+	stopOnce sync.Once
+	stopMu   sync.Mutex
+
 	// Rate limiting
 	rateLimitedUntil time.Time  // when rate limited, don't fetch until this time
 	rateLimitMu      sync.Mutex // protects rateLimitedUntil
@@ -140,6 +145,9 @@ func (p *XiaohongshuPlugin) parseUserPostedNotes(bodyBytes []byte) {
 		return
 	}
 
+	// New batch means user is browsing — reset stop signal for fresh goroutines
+	p.resetStopChan()
+
 	emitted := 0
 	for _, n := range notes {
 		if noteMap, ok := n.(map[string]interface{}); ok {
@@ -163,7 +171,13 @@ func (p *XiaohongshuPlugin) parseUserPostedNotes(bodyBytes []byte) {
 	go func() {
 		// Poll until all pending video fetches are done
 		for atomic.LoadInt64(&p.pendingCount) > 0 {
+			if p.isStopped() {
+				return
+			}
 			time.Sleep(2 * time.Second)
+		}
+		if p.isStopped() {
+			return
 		}
 		p.retryFailedVideos()
 	}()
@@ -540,6 +554,51 @@ func (p *XiaohongshuPlugin) emitUserPostedNote(note map[string]interface{}) bool
 	return true
 }
 
+// StopFetching signals all in-flight and queued video fetch goroutines to stop.
+// Called when the user disables the proxy ("关闭抓取").
+func (p *XiaohongshuPlugin) StopFetching() {
+	p.stopMu.Lock()
+	defer p.stopMu.Unlock()
+	if p.stopChan != nil {
+		p.stopOnce.Do(func() {
+			close(p.stopChan)
+		})
+	}
+	// Clear failed queue so retries don't run
+	p.failedMu.Lock()
+	p.failedVideos = nil
+	p.failedMu.Unlock()
+	// Clear rate limit cooldown
+	p.rateLimitMu.Lock()
+	p.rateLimitedUntil = time.Time{}
+	p.rateLimitMu.Unlock()
+	log.Printf("[xiaohongshu] 已停止视频抓取")
+}
+
+// resetStopChan creates a fresh stopChan for a new fetch session.
+func (p *XiaohongshuPlugin) resetStopChan() {
+	p.stopMu.Lock()
+	defer p.stopMu.Unlock()
+	p.stopChan = make(chan struct{})
+	p.stopOnce = sync.Once{}
+}
+
+// isStopped returns true if StopFetching has been called.
+func (p *XiaohongshuPlugin) isStopped() bool {
+	p.stopMu.Lock()
+	ch := p.stopChan
+	p.stopMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *XiaohongshuPlugin) acquireFetchSlot() {
 	p.fetchSemOnce.Do(func() {
 		p.fetchSem = make(chan struct{}, 1) // serial: one feed API request at a time
@@ -551,8 +610,8 @@ func (p *XiaohongshuPlugin) releaseFetchSlot() {
 	<-p.fetchSem
 }
 
-// isRateLimited checks if we're in the 1-hour cooldown period after a rate limit hit.
-// If so, it sleeps until the cooldown expires and returns true.
+// waitIfRateLimited checks if we're in the cooldown period after a rate limit hit.
+// If so, it sleeps until the cooldown expires, checking for stop signal periodically.
 func (p *XiaohongshuPlugin) waitIfRateLimited() {
 	p.rateLimitMu.Lock()
 	until := p.rateLimitedUntil
@@ -565,7 +624,21 @@ func (p *XiaohongshuPlugin) waitIfRateLimited() {
 	waitDur := time.Until(until)
 	log.Printf("[xiaohongshu] 限流冷却中，将在 %s 恢复抓取（等待 %.0f 分钟）",
 		until.Format("15:04:05"), waitDur.Minutes())
-	time.Sleep(waitDur)
+
+	// Sleep in 5s intervals so we can respond to stop signal quickly
+	for time.Now().Before(until) {
+		if p.isStopped() {
+			return
+		}
+		remaining := time.Until(until)
+		if remaining <= 0 {
+			break
+		}
+		if remaining > 5*time.Second {
+			remaining = 5 * time.Second
+		}
+		time.Sleep(remaining)
+	}
 	log.Printf("[xiaohongshu] 限流冷却结束，恢复抓取")
 }
 
@@ -585,13 +658,30 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 	p.acquireFetchSlot()
 	defer p.releaseFetchSlot()
 
+	// Check if stopped before proceeding
+	if p.isStopped() {
+		p.pendingVideos.Delete(noteId)
+		return
+	}
+
 	// Wait if we're in rate limit cooldown (1 hour)
 	p.waitIfRateLimited()
+
+	// Check again after potential long wait
+	if p.isStopped() {
+		p.pendingVideos.Delete(noteId)
+		return
+	}
 
 	// Fixed 5s delay + random jitter (0-3s)
 	jitter := float64(rand.Intn(3000)) / 1000.0
 	sleepDur := time.Duration((5.0+jitter)*1000) * time.Millisecond
 	time.Sleep(sleepDur)
+
+	if p.isStopped() {
+		p.pendingVideos.Delete(noteId)
+		return
+	}
 
 	cookies := p.getCookies()
 	videoUrl := ""
@@ -637,6 +727,7 @@ func (p *XiaohongshuPlugin) fetchAndEmitVideo(noteId, noteUrl, coverUrl, display
 	}
 	headersJSON, _ := json.Marshal(downloadHeaders)
 	otherData["headers"] = string(headersJSON)
+	otherData["noteUrlSign"] = noteUrlSign
 
 	urlSign := shared.Md5(videoUrl)
 	id, err := gonanoid.New()
@@ -803,10 +894,25 @@ func (p *XiaohongshuPlugin) retryFailedVideos() {
 	log.Printf("[xiaohongshu] retrying %d failed videos...", len(toRetry))
 
 	for _, v := range toRetry {
+		if p.isStopped() {
+			log.Printf("[xiaohongshu] retry cancelled, %d remaining", len(toRetry))
+			return
+		}
+
 		p.acquireFetchSlot()
+
+		if p.isStopped() {
+			p.releaseFetchSlot()
+			return
+		}
 
 		// Wait if rate limited
 		p.waitIfRateLimited()
+
+		if p.isStopped() {
+			p.releaseFetchSlot()
+			return
+		}
 
 		// Fixed 5s delay + jitter
 		jitter := float64(rand.Intn(3000)) / 1000.0
@@ -832,6 +938,7 @@ func (p *XiaohongshuPlugin) retryFailedVideos() {
 			}
 			headersJSON, _ := json.Marshal(downloadHeaders)
 			v.otherData["headers"] = string(headersJSON)
+			v.otherData["noteUrlSign"] = noteUrlSign
 
 			urlSign := shared.Md5(videoUrl)
 			id, err := gonanoid.New()
